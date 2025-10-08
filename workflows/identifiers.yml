@@ -1,0 +1,59 @@
+name: identifiers
+on:
+  workflow_call:
+    outputs:
+      base_repo:
+        description: Sanitized base repo
+      base_branch:
+        description: Sanitized base branch
+      pr_number:
+        description: Sanitized PR number
+      pr_repo:
+        description: Sanitized PR repo
+      pr_branch:
+        description: Sanitized PR branch
+
+jobs:
+  build-identifiers:
+    runs-on: ubuntu-latest
+    outputs:
+      base_repo: ${{ steps.ident.outputs.base_repo }}
+      base_branch: ${{ steps.ident.outputs.base_branch }}
+      pr_number: ${{ steps.ident.outputs.pr_number }}
+      pr_repo: ${{ steps.ident.outputs.pr_repo }}
+      pr_branch: ${{ steps.ident.outputs.pr_branch }}
+    steps:
+      - name: Identify and sanitize
+        id: ident
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SCRIPT_PATH="${{ github.workspace }}/.cicd/scripts/sanitize.sh"
+
+          if [[ -f "${SCRIPT_PATH}" ]]; then
+            source "${SCRIPT_PATH}"
+          else
+            echo "::error::Missing required file: ${SCRIPT_PATH}"
+            echo "This workflow expects the central CI/CD submodule to be checked out (with submodules: recursive)."
+            exit 1
+          fi
+
+          base_repo=$(sanitize "${{ github.repository }}")
+          base_branch=$(sanitize "${{ github.ref_name }}")
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            pr_number="pr${{ github.event.number }}"
+            pr_repo=$(sanitize "${{ github.event.pull_request.head.repo.full_name }}")
+            pr_branch=$(sanitize "${{ github.event.pull_request.head.ref }}")
+          else
+            pr_number="none"
+            pr_repo="$base_repo"
+            pr_branch="$base_branch"
+          fi
+
+          echo "base_repo=$base_repo" >> $GITHUB_OUTPUT
+          echo "base_branch=$base_branch" >> $GITHUB_OUTPUT
+          echo "pr_number=$pr_number" >> $GITHUB_OUTPUT
+          echo "pr_repo=$pr_repo" >> $GITHUB_OUTPUT
+          echo "pr_branch=$pr_branch" >> $GITHUB_OUTPUT
