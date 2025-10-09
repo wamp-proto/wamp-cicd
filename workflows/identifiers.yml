@@ -1,28 +1,60 @@
+# Copyright (c) typedef int GmbH, Germany, 2025. All rights reserved.
+# Licensed under MIT.
+#
+# https://github.com/wamp-proto/wamp-cicd: /workflows/identifiers.yml
+#
 name: identifiers
+
 on:
   workflow_call:
     outputs:
       base_repo:
-        description: Sanitized base repo
+        description: >
+          Sanitized base repository identifier, derived from `github.repository`.
+          Example: "crossbario_autobahn_python" (original: "crossbario/autobahn-python")
+        value: ${{ jobs.build-identifiers.outputs.base_repo }}
+
       base_branch:
-        description: Sanitized base branch
+        description: >
+          Base repository branch name in a filesystem-safe form.
+          Example: "master" (original: "master")
+        value: ${{ jobs.build-identifiers.outputs.base_branch }}
+
       pr_number:
-        description: Sanitized PR number
+        description: >
+          Pull request number, prefixed with 'pr'. If not a PR, set to "none".
+          Example: "pr1680" or "none"
+        value: ${{ jobs.build-identifiers.outputs.pr_number }}
+
       pr_repo:
-        description: Sanitized PR repo
+        description: >
+          Sanitized fork repository identifier from which the PR originates.
+          Example: "oberstet_autobahn_python" (original: "oberstet/autobahn-python")
+        value: ${{ jobs.build-identifiers.outputs.pr_repo }}
+
       pr_branch:
-        description: Sanitized PR branch
+        description: >
+          Sanitized branch name of the PR head repository.
+          Example: "rel_v25_9_1_part4b" (original: "rel_v25.9.1_part4b")
+        value: ${{ jobs.build-identifiers.outputs.pr_branch }}
 
 jobs:
   build-identifiers:
     runs-on: ubuntu-latest
+
     outputs:
       base_repo: ${{ steps.ident.outputs.base_repo }}
       base_branch: ${{ steps.ident.outputs.base_branch }}
       pr_number: ${{ steps.ident.outputs.pr_number }}
       pr_repo: ${{ steps.ident.outputs.pr_repo }}
       pr_branch: ${{ steps.ident.outputs.pr_branch }}
+
     steps:
+      - name: Checkout repo (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Identify and sanitize
         id: ident
         shell: bash
