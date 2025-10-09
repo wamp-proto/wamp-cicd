@@ -142,3 +142,31 @@ jobs:
           echo "pr_branch=$pr_branch" >> $GITHUB_OUTPUT
           echo "release_type=$release_type" >> "$GITHUB_OUTPUT"
           echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+
+  log-identifiers:
+    name: Log resolved identifiers
+    runs-on: ubuntu-latest
+    needs: build-identifiers
+    steps:
+      - name: Print identifier summary
+        shell: bash
+        run: |
+          echo "───────────────────────────────────────────────"
+          echo "🔎  GitHub Identifiers Summary"
+          echo "───────────────────────────────────────────────"
+          echo "Base repository : ${{ needs.build-identifiers.outputs.base_repo }}"
+          echo "Base branch     : ${{ needs.build-identifiers.outputs.base_branch }}"
+          echo "Pull request #  : ${{ needs.build-identifiers.outputs.pr_number }}"
+          echo "PR repository   : ${{ needs.build-identifiers.outputs.pr_repo }}"
+          echo "PR branch       : ${{ needs.build-identifiers.outputs.pr_branch }}"
+          echo "Release type    : ${{ needs.build-identifiers.outputs.release_type }}"
+          echo "Release name    : ${{ needs.build-identifiers.outputs.release_name }}"
+          echo "───────────────────────────────────────────────"
+          echo "🌍 GitHub context"
+          echo "───────────────────────────────────────────────"
+          echo "Event name      : ${{ github.event_name }}"
+          echo "Ref type        : ${{ github.ref_type }}"
+          echo "Ref name        : ${{ github.ref_name }}"
+          echo "Repository      : ${{ github.repository }}"
+          echo "Workflow run ID : ${{ github.run_id }}"
+          echo "───────────────────────────────────────────────"
