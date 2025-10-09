@@ -38,6 +38,27 @@ on:
           Example: "rel_v25_9_1_part4b" (original: "rel_v25.9.1_part4b")
         value: ${{ jobs.build-identifiers.outputs.pr_branch }}
 
+      release_type:
+        description: >
+          Release type:
+
+          Type         Trigger	                        Context	                Goal
+          ----------------------------------------------------------------------------------------
+          development  pull_request_target (fork PR)   fork → base	            PR build/test
+          nightly      push (branch, not tagged)       base repo branch         Nightly/dev build
+          release      push (tag)                      base repo branch + tag   Release build
+        value: ${{ jobs.build-identifiers.outputs.release_type }}
+
+      release_name:
+        description: >
+          Resolved release identifier, combining PR, branch, or tag context with timestamp.
+
+          Examples:
+            - development: "pr1680-oberstet_autobahn_python-rel_v25_9_1_part4b-202510091530"
+            - nightly: "master-202510091530"
+            - release: "v25_9_10"
+        value: ${{ jobs.build-identifiers.outputs.release_name }}
+
 jobs:
   build-identifiers:
     runs-on: ubuntu-latest
@@ -48,12 +69,15 @@ jobs:
       pr_number: ${{ steps.ident.outputs.pr_number }}
       pr_repo: ${{ steps.ident.outputs.pr_repo }}
       pr_branch: ${{ steps.ident.outputs.pr_branch }}
+      release_type: ${{ steps.ident.outputs.release_type }}
+      release_name: ${{ steps.ident.outputs.release_name }}
 
     steps:
       - name: Checkout repo (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0 # fetch all history for all branches and tags
 
       - name: Identify and sanitize
         id: ident
@@ -84,8 +108,37 @@ jobs:
             pr_branch="$base_branch"
           fi
 
+          # Determine if this is a tag context
+          tag_name=""
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            tag_name="${{ github.ref_name }}"
+          else
+            git fetch --tags --force >/dev/null 2>&1 || true
+            tag_name=$(git describe --tags --exact-match 2>/dev/null || true)
+          fi
+
+          if [[ -n "$tag_name" ]]; then
+            base_tag=$(sanitize "$tag_name")
+          else
+            base_tag="none"
+          fi
+
+          timestamp=$(date +'%Y%m%d%H%M')
+          if [[ "$pr_number" != "none" ]]; then
+            release_type="development"
+            release_name="${pr_number}-${pr_repo}-${pr_branch}-${timestamp}"
+          elif [[ "$base_tag" != "none" ]]; then
+            release_type="release"
+            release_name="${base_tag}"
+          else
+            release_type="nightly"
+            release_name="${base_branch}-${timestamp}"
+          fi
+
           echo "base_repo=$base_repo" >> $GITHUB_OUTPUT
           echo "base_branch=$base_branch" >> $GITHUB_OUTPUT
           echo "pr_number=$pr_number" >> $GITHUB_OUTPUT
           echo "pr_repo=$pr_repo" >> $GITHUB_OUTPUT
           echo "pr_branch=$pr_branch" >> $GITHUB_OUTPUT
+          echo "release_type=$release_type" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
