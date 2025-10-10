@@ -135,6 +135,7 @@ jobs:
             # Convert GitHub context to JSON and parse with jq
             PR_DATA='${{ toJSON(github.event.workflow_run.pull_requests) }}'
             PR_COUNT=$(echo "$PR_DATA" | jq 'length')
+            echo "Number of associated PRs: ${PR_COUNT}"
 
             if [[ "$PR_COUNT" -gt 0 ]]; then
 
@@ -212,29 +213,32 @@ jobs:
           fi
 
           # -------------------------------------------------------
-          # Extract head repository and commit SHA (for workflow_run)
+          # Extract head repository and commit SHA (for workflow_run or pull_request)
           # -------------------------------------------------------
           if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             head_repo_raw="${{ github.event.workflow_run.head_repository.full_name }}"
             head_sha_raw="${{ github.event.workflow_run.head_sha }}"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            head_repo_raw="${{ github.event.pull_request.head.repo.full_name }}"
+            head_sha_raw="${{ github.event.pull_request.head.sha }}"
+          else
+            head_repo_raw=""
+            head_sha_raw=""
+          fi
 
-            if [[ -n "$head_repo_raw" && "$head_repo_raw" != "null" ]]; then
-              head_repo=$(sanitize "$head_repo_raw")
-            else
-              head_repo="none"
-            fi
-
-            if [[ -n "$head_sha_raw" && "$head_sha_raw" != "null" ]]; then
-              head_sha=$(sanitize "$head_sha_raw")
-            else
-              head_sha="none"
-            fi
-
-            echo "Detected workflow_run head context: $head_repo@$head_sha"
+          if [[ -n "$head_repo_raw" && "$head_repo_raw" != "null" ]]; then
+            head_repo=$(sanitize "$head_repo_raw")
           else
             head_repo="none"
+          fi
+
+          if [[ -n "$head_sha_raw" && "$head_sha_raw" != "null" ]]; then
+            head_sha=$(sanitize "$head_sha_raw")
+          else
             head_sha="none"
           fi
+
+          echo "Detected head context: $head_repo@$head_sha"
 
           # -------------------------------------------------------
           # Set release_type and release_name
