@@ -73,8 +73,16 @@ on:
             - stable: "v25_9_10"
         value: ${{ jobs.build-identifiers.outputs.release_name }}
 
+permissions:
+  # required for the workflow to fetch repo data (including submodules, artifacts, etc.)
+  contents: read
+
+  # required for GitHub’s REST API to return PR metadata when using the /pulls?head= endpoint
+  pull-requests: read
+
 jobs:
   build-identifiers:
+    name: Build GitHub identifiers
     runs-on: ubuntu-latest
 
     outputs:
@@ -115,6 +123,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          if ! command -v jq >/dev/null; then
+            echo "::error::jq not installed"; exit 1
+          fi
+          if ! command -v curl >/dev/null; then
+            echo "::error::curl not installed"; exit 1
+          fi
+
           SCRIPT_PATH="${{ github.workspace }}/.cicd/scripts/sanitize.sh"
 
           if [[ -f "${SCRIPT_PATH}" ]]; then
@@ -128,8 +143,10 @@ jobs:
           base_repo=$(sanitize "${{ github.repository }}")
           base_branch=$(sanitize "${{ github.ref_name }}")
 
+          # >>> Determine/Set: pr_repo, pr_branch, pr_number <<<
+          #
           if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
-            # workflow_run event: extract PR info from the triggering workflow
+            # (1) workflow_run event: extract PR info from the triggering workflow
             echo "Detected workflow_run event - extracting PR context from triggering workflow"
 
             # Convert GitHub context to JSON and parse with jq
@@ -138,6 +155,7 @@ jobs:
             echo "Number of associated PRs: ${PR_COUNT}"
 
             if [[ "$PR_COUNT" -gt 0 ]]; then
+              echo "(1.1) determine pr_repo/pr_branch/pr_number for PR on base repo from workflow_run.pull_requests ..."
 
               # GitHub only populates workflow_run.pull_requests if:
               # - The triggering workflow was actually run on a PR event (event == "pull_request"), _AND_
@@ -153,7 +171,10 @@ jobs:
 
               echo "Restored PR context: $pr_number from $pr_repo/$pr_branch"
             else
+              echo "(1.2) determine pr_repo/pr_branch/pr_number for forked repo from ..."
+
               if [[ "${{ github.event.workflow_run.event }}" == "pull_request" ]]; then
+                echo "... (1.2.1) PR (on that forked repo) ..."
 
                 # When the workflow was triggered from a PR, but not on the base repo but on a _FORK_:
                 # - pull_requests is empty, thus
@@ -163,22 +184,23 @@ jobs:
                 pr_repo=$(sanitize "${{ github.event.workflow_run.head_repository.full_name }}")
                 pr_branch=$(sanitize "${{ github.event.workflow_run.head_branch }}")
 
-                # Try to extract PR number if available
-                PR_DATA='${{ toJSON(github.event.workflow_run.pull_requests) }}'
-                pr_number_raw=$(echo "$PR_DATA" | jq -r '.[0].number // empty')
+                # Use GitHub REST API to resolve PR number by head SHA
+                echo "Attempting to resolve PR via API: head=${{ github.event.workflow_run.head_repository.full_name }}:${{ github.event.workflow_run.head_branch }}"
+                pr_number_raw=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    "https://api.github.com/repos/${{ github.repository }}/pulls?head=${{ github.event.workflow_run.head_repository.full_name }}:${{ github.event.workflow_run.head_branch }}" \
+                    | jq -r '.[0].number // empty')
+
                 if [[ -n "$pr_number_raw" && "$pr_number_raw" != "null" ]]; then
                   pr_number="pr${pr_number_raw}"
+                  echo "Resolved PR number via API: $pr_number"
                 else
-                  # Try to parse PR number from display_title (fallback)
-                  pr_number=$(echo '${{ github.event.workflow_run.display_title }}' \
-                              | grep -oE 'PR #([0-9]+)' \
-                              | sed 's/PR #/pr/')
-                  pr_number=${pr_number:-"none"}
+                  pr_number="none"
+                  echo "::warning::Could not resolve PR number (forked PR, missing metadata)"
                 fi
-
-                echo "Restored PR context: $pr_number from $pr_repo/$pr_branch"
               else
-                echo "workflow_run event was not from a pull_request (e.g., direct push)"
+                echo "... (1.2.2) non-PR (e.g., direct push) ..."
+
                 pr_number="none"
                 pr_repo="$base_repo"
                 pr_branch="$base_branch"
@@ -186,11 +208,15 @@ jobs:
             fi
 
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo " (2) Detected pull_request event - extracting PR context from this workflow"
+
             pr_number="pr${{ github.event.number }}"
             pr_repo=$(sanitize "${{ github.event.pull_request.head.repo.full_name }}")
             pr_branch=$(sanitize "${{ github.event.pull_request.head.ref }}")
 
           else
+            echo "(3) Detected non-workflow_run & non-pull_request event ${{ github.event_name }} - no PR context applicable!"
+
             pr_number="none"
             pr_repo="$base_repo"
             pr_branch="$base_branch"
@@ -255,15 +281,17 @@ jobs:
             release_name="${base_branch}-${timestamp}"
           fi
 
-          echo "base_repo=$base_repo" >> $GITHUB_OUTPUT
-          echo "base_branch=$base_branch" >> $GITHUB_OUTPUT
-          echo "pr_number=$pr_number" >> $GITHUB_OUTPUT
-          echo "pr_repo=$pr_repo" >> $GITHUB_OUTPUT
-          echo "pr_branch=$pr_branch" >> $GITHUB_OUTPUT
-          echo "head_repo=$head_repo" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
-          echo "release_type=$release_type" >> "$GITHUB_OUTPUT"
-          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+          {
+            echo "base_repo=$base_repo"
+            echo "base_branch=$base_branch"
+            echo "pr_number=$pr_number"
+            echo "pr_repo=$pr_repo"
+            echo "pr_branch=$pr_branch"
+            echo "head_repo=$head_repo"
+            echo "head_sha=$head_sha"
+            echo "release_type=$release_type"
+            echo "release_name=$release_name"
+          } >> "$GITHUB_OUTPUT"
 
   log-identifiers:
     name: Log resolved identifiers
