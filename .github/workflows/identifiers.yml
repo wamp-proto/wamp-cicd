@@ -73,17 +73,20 @@ on:
             - stable: "v25_9_10"
         value: ${{ jobs.build-identifiers.outputs.release_name }}
 
-permissions:
-  # required for the workflow to fetch repo data (including submodules, artifacts, etc.)
-  contents: read
-
-  # required for GitHub’s REST API to return PR metadata when using the /pulls?head= endpoint
-  pull-requests: read
-
 jobs:
   build-identifiers:
     name: Build GitHub identifiers
     runs-on: ubuntu-latest
+
+    permissions:
+      # required for the workflow to fetch repo data (including submodules, artifacts, etc.)
+      contents: read
+
+      # required for GitHub’s REST API to return PR metadata when using the /pulls?head= endpoint
+      pull-requests: read
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     outputs:
       base_repo: ${{ steps.ident.outputs.base_repo }}
@@ -137,6 +140,11 @@ jobs:
           else
             echo "::error::Missing required file: ${SCRIPT_PATH}"
             echo "This workflow expects the central CI/CD submodule to be checked out (with submodules: recursive)."
+            exit 1
+          fi
+
+          if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+            echo "::error::GITHUB_TOKEN not set. Make sure to export it via env."
             exit 1
           fi
 
