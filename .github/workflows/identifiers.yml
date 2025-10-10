@@ -97,16 +97,21 @@ jobs:
 
       - name: Debug GitHub event payload
         id: debug-event
-        shell: bash
         run: |
           echo "───────────────────────────────────────────────"
           echo "🧩 Dumping GitHub event payload (github.event)"
           echo "───────────────────────────────────────────────"
-          echo "${{ toJSON(github.event) }}" | jq .
-          echo "───────────────────────────────────────────────"
-          echo "🧩 Dumping GitHub pull_requests payload (github.event.workflow_run.pull_requests)"
-          echo "───────────────────────────────────────────────"
-          echo "${{ toJSON(github.event.workflow_run.pull_requests) }}" | jq .
+
+          # write the JSON directly to a file without any shell parsing
+          printf '%s\n' "${{ toJSON(github.event) }}" > event.json
+
+          # pretty print if jq exists, otherwise just cat
+          if command -v jq >/dev/null 2>&1; then
+            jq . event.json || cat event.json
+          else
+            cat event.json
+          fi
+
           echo "───────────────────────────────────────────────"
 
       - name: Identify and sanitize
