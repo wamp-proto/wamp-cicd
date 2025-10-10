@@ -98,14 +98,41 @@ jobs:
           base_repo=$(sanitize "${{ github.repository }}")
           base_branch=$(sanitize "${{ github.ref_name }}")
 
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # workflow_run event: extract PR info from the triggering workflow
+            echo "Detected workflow_run event - extracting PR context from triggering workflow"
+
+            # Convert GitHub context to JSON and parse with jq
+            PR_DATA='${{ toJSON(github.event.workflow_run.pull_requests) }}'
+            PR_COUNT=$(echo "$PR_DATA" | jq 'length')
+
+            if [[ "$PR_COUNT" -gt 0 ]]; then
+              # Extract first PR (there should only be one)
+              pr_number="pr$(echo "$PR_DATA" | jq -r '.[0].number')"
+              pr_repo_raw=$(echo "$PR_DATA" | jq -r '.[0].head.repo.full_name')
+              pr_repo=$(sanitize "$pr_repo_raw")
+              pr_branch_raw=$(echo "$PR_DATA" | jq -r '.[0].head.ref')
+              pr_branch=$(sanitize "$pr_branch_raw")
+
+              echo "Restored PR context: $pr_number from $pr_repo/$pr_branch"
+            else
+              # workflow_run but no associated PR (e.g., direct push)
+              pr_number="none"
+              pr_repo="$base_repo"
+              pr_branch="$base_branch"
+              echo "No PR associated with workflow_run"
+            fi
+
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
             pr_number="pr${{ github.event.number }}"
             pr_repo=$(sanitize "${{ github.event.pull_request.head.repo.full_name }}")
             pr_branch=$(sanitize "${{ github.event.pull_request.head.ref }}")
+
           else
             pr_number="none"
             pr_repo="$base_repo"
             pr_branch="$base_branch"
+
           fi
 
           # Determine if this is a tag context
