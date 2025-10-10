@@ -38,6 +38,20 @@ on:
           Example: "rel_v25_9_1_part4b" (original: "rel_v25.9.1_part4b")
         value: ${{ jobs.build-identifiers.outputs.pr_branch }}
 
+      head_repo:
+        description: >
+          Sanitized repository full name from workflow_run.head_repository.full_name,
+          if this workflow was triggered by a workflow_run. Example: "oberstet_autobahn_python".
+          "none" otherwise.
+        value: ${{ jobs.build-identifiers.outputs.head_repo }}
+
+      head_sha:
+        description: >
+          Commit SHA from workflow_run.head_sha, if this workflow was triggered
+          by a workflow_run. Example: "a1b2c3d4e5f6g7h8i9j0".
+          "none" otherwise.
+        value: ${{ jobs.build-identifiers.outputs.head_sha }}
+
       release_type:
         description: >
           Release type:
@@ -69,6 +83,8 @@ jobs:
       pr_number: ${{ steps.ident.outputs.pr_number }}
       pr_repo: ${{ steps.ident.outputs.pr_repo }}
       pr_branch: ${{ steps.ident.outputs.pr_branch }}
+      head_repo: ${{ steps.ident.outputs.head_repo }}
+      head_sha: ${{ steps.ident.outputs.head_sha }}
       release_type: ${{ steps.ident.outputs.release_type }}
       release_name: ${{ steps.ident.outputs.release_name }}
 
@@ -78,6 +94,20 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0 # fetch all history for all branches and tags
+
+      - name: Debug GitHub event payload
+        id: debug-event
+        shell: bash
+        run: |
+          echo "───────────────────────────────────────────────"
+          echo "🧩 Dumping GitHub event payload (github.event)"
+          echo "───────────────────────────────────────────────"
+          echo "${{ toJSON(github.event) }}" | jq .
+          echo "───────────────────────────────────────────────"
+          echo "🧩 Dumping GitHub pull_requests payload (github.event.workflow_run.pull_requests)"
+          echo "───────────────────────────────────────────────"
+          echo "${{ toJSON(github.event.workflow_run.pull_requests) }}" | jq .
+          echo "───────────────────────────────────────────────"
 
       - name: Identify and sanitize
         id: ident
@@ -107,7 +137,13 @@ jobs:
             PR_COUNT=$(echo "$PR_DATA" | jq 'length')
 
             if [[ "$PR_COUNT" -gt 0 ]]; then
-              # Extract first PR (there should only be one)
+
+              # GitHub only populates workflow_run.pull_requests if:
+              # - The triggering workflow was actually run on a PR event (event == "pull_request"), _AND_
+              # - That workflow file exists on the _BASE_ repo’s branch (not from a fork).
+
+              # Extract first PR (there should only be one):
+
               pr_number="pr$(echo "$PR_DATA" | jq -r '.[0].number')"
               pr_repo_raw=$(echo "$PR_DATA" | jq -r '.[0].head.repo.full_name')
               pr_repo=$(sanitize "$pr_repo_raw")
@@ -116,11 +152,36 @@ jobs:
 
               echo "Restored PR context: $pr_number from $pr_repo/$pr_branch"
             else
-              # workflow_run but no associated PR (e.g., direct push)
-              pr_number="none"
-              pr_repo="$base_repo"
-              pr_branch="$base_branch"
-              echo "No PR associated with workflow_run"
+              if [[ "${{ github.event.workflow_run.event }}" == "pull_request" ]]; then
+
+                # When the workflow was triggered from a PR, but not on the base repo but on a _FORK_:
+                # - pull_requests is empty, thus
+                # - use head_repository and head_branch (these always exist), and
+                # - extract the PR number from the display_title (works well for GitHub’s default titles)
+
+                pr_repo=$(sanitize "${{ github.event.workflow_run.head_repository.full_name }}")
+                pr_branch=$(sanitize "${{ github.event.workflow_run.head_branch }}")
+
+                # Try to extract PR number if available
+                PR_DATA='${{ toJSON(github.event.workflow_run.pull_requests) }}'
+                pr_number_raw=$(echo "$PR_DATA" | jq -r '.[0].number // empty')
+                if [[ -n "$pr_number_raw" && "$pr_number_raw" != "null" ]]; then
+                  pr_number="pr${pr_number_raw}"
+                else
+                  # Try to parse PR number from display_title (fallback)
+                  pr_number=$(echo '${{ github.event.workflow_run.display_title }}' \
+                              | grep -oE 'PR #([0-9]+)' \
+                              | sed 's/PR #/pr/')
+                  pr_number=${pr_number:-"none"}
+                fi
+
+                echo "Restored PR context: $pr_number from $pr_repo/$pr_branch"
+              else
+                echo "workflow_run event was not from a pull_request (e.g., direct push)"
+                pr_number="none"
+                pr_repo="$base_repo"
+                pr_branch="$base_branch"
+              fi
             fi
 
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -150,6 +211,34 @@ jobs:
             base_tag="none"
           fi
 
+          # -------------------------------------------------------
+          # Extract head repository and commit SHA (for workflow_run)
+          # -------------------------------------------------------
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            head_repo_raw="${{ github.event.workflow_run.head_repository.full_name }}"
+            head_sha_raw="${{ github.event.workflow_run.head_sha }}"
+
+            if [[ -n "$head_repo_raw" && "$head_repo_raw" != "null" ]]; then
+              head_repo=$(sanitize "$head_repo_raw")
+            else
+              head_repo="none"
+            fi
+
+            if [[ -n "$head_sha_raw" && "$head_sha_raw" != "null" ]]; then
+              head_sha=$(sanitize "$head_sha_raw")
+            else
+              head_sha="none"
+            fi
+
+            echo "Detected workflow_run head context: $head_repo@$head_sha"
+          else
+            head_repo="none"
+            head_sha="none"
+          fi
+
+          # -------------------------------------------------------
+          # Set release_type and release_name
+          # -------------------------------------------------------
           timestamp=$(date +'%Y%m%d%H%M')
           if [[ "$pr_number" != "none" ]]; then
             release_type="development"
@@ -167,6 +256,8 @@ jobs:
           echo "pr_number=$pr_number" >> $GITHUB_OUTPUT
           echo "pr_repo=$pr_repo" >> $GITHUB_OUTPUT
           echo "pr_branch=$pr_branch" >> $GITHUB_OUTPUT
+          echo "head_repo=$head_repo" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "release_type=$release_type" >> "$GITHUB_OUTPUT"
           echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
 
@@ -186,14 +277,17 @@ jobs:
           echo "Pull request #  : ${{ needs.build-identifiers.outputs.pr_number }}"
           echo "PR repository   : ${{ needs.build-identifiers.outputs.pr_repo }}"
           echo "PR branch       : ${{ needs.build-identifiers.outputs.pr_branch }}"
+          echo "Head repository : ${{ needs.build-identifiers.outputs.head_repo }}"
+          echo "Head SHA        : ${{ needs.build-identifiers.outputs.head_sha }}"
           echo "Release type    : ${{ needs.build-identifiers.outputs.release_type }}"
           echo "Release name    : ${{ needs.build-identifiers.outputs.release_name }}"
           echo "───────────────────────────────────────────────"
           echo "🌍 GitHub context"
           echo "───────────────────────────────────────────────"
-          echo "Event name      : ${{ github.event_name }}"
-          echo "Ref type        : ${{ github.ref_type }}"
-          echo "Ref name        : ${{ github.ref_name }}"
-          echo "Repository      : ${{ github.repository }}"
-          echo "Workflow run ID : ${{ github.run_id }}"
+          echo "Event name         : ${{ github.event_name }}"
+          echo "Ref type           : ${{ github.ref_type }}"
+          echo "Ref name           : ${{ github.ref_name }}"
+          echo "Repository         : ${{ github.repository }}"
+          echo "Workflow run ID    : ${{ github.run_id }}"
+          echo "Workflow run event : ${{ github.event.workflow_run.event }}"
           echo "───────────────────────────────────────────────"
