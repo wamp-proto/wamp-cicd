@@ -97,15 +97,15 @@ jobs:
 
       - name: Debug GitHub event payload
         id: debug-event
+        shell: bash
         run: |
           echo "───────────────────────────────────────────────"
           echo "🧩 Dumping GitHub event payload (github.event)"
           echo "───────────────────────────────────────────────"
 
-          # write the JSON directly to a file without any shell parsing
-          printf '%s\n' "${{ toJSON(github.event) }}" > event.json
+          # write JSON directly to a file; let Actions expand toJSON here
+          printf '%s\n' ${{ toJSON(github.event) }} > event.json
 
-          # pretty print if jq exists, otherwise just cat
           if command -v jq >/dev/null 2>&1; then
             jq . event.json || cat event.json
           else
