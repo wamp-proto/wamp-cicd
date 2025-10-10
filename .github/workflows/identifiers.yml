@@ -95,24 +95,19 @@ jobs:
           submodules: recursive
           fetch-depth: 0 # fetch all history for all branches and tags
 
-      - name: Debug GitHub event payload
+      # The file pointed by the $GITHUB_EVENT_PATH env variable contains the same information
+      # than the corresponding webhook event.
+      # See: https://developer.github.com/webhooks/#events
+      - name: Dump GitHub event
         id: debug-event
         shell: bash
         run: |
           echo "───────────────────────────────────────────────"
           echo "🧩 Dumping GitHub event payload (github.event)"
+          echo "Event file: $GITHUB_EVENT_PATH"
           echo "───────────────────────────────────────────────"
-
-          # write JSON directly to a file; let Actions expand toJSON here
-          printf '%s\n' ${{ toJSON(github.event) }} > event.json
-
-          if command -v jq >/dev/null 2>&1; then
-            jq . event.json || cat event.json
-          else
-            cat event.json
-          fi
-
-          echo "───────────────────────────────────────────────"
+          cp "$GITHUB_EVENT_PATH" event.json
+          jq . event.json
 
       - name: Identify and sanitize
         id: ident
