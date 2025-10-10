@@ -278,8 +278,18 @@ jobs:
           # Set release_type and release_name
           # -------------------------------------------------------
           timestamp=$(date +'%Y%m%d%H%M')
-          if [[ "$pr_number" != "none" ]]; then
+
+          # Fork detection: if head_repo differs from base_repo, it's always a development/PR build
+          # This is the PRIMARY signal, even if we couldn't resolve the PR number
+          if [[ "$pr_number" != "none" ]] || [[ "$head_repo" != "$base_repo" && "$head_repo" != "none" ]]; then
             release_type="development"
+
+            # If we couldn't resolve PR number but detected a fork, create fallback identifier
+            if [[ "$pr_number" == "none" ]]; then
+              pr_number="fork-${head_sha:0:8}"
+              echo "::notice::Fork detected but PR number unavailable - using fallback: $pr_number"
+            fi
+
             release_name="${pr_number}-${pr_repo}-${pr_branch}-${timestamp}"
           elif [[ "$base_tag" != "none" ]]; then
             release_type="stable"
