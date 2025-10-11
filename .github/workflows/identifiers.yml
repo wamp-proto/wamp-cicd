@@ -233,11 +233,39 @@ jobs:
 
           # Determine if this is a tag context
           tag_name=""
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # In workflow_run context, github.ref_type refers to the calling workflow,
+            # not the original event. We must check if the triggering workflow was
+            # actually triggered by a tag push.
+            #
+            # Check the event type of the triggering workflow:
+            triggering_event="${{ github.event.workflow_run.event }}"
+            echo "Triggering workflow event: $triggering_event"
+
+            # Only consider it a tag context if the original event was explicitly a push
+            # AND github.ref_type at that level was 'tag'
+            if [[ "$triggering_event" == "push" ]]; then
+              # In workflow_run, we need to check the actual ref that was pushed
+              # Unfortunately, workflow_run doesn't preserve ref_type, so we check
+              # if head_branch looks like a tag or use git describe on head_sha
+              git fetch --tags --force >/dev/null 2>&1 || true
+
+              # Check if head_sha is exactly at a tag
+              if [[ -n "$head_sha_raw" && "$head_sha_raw" != "null" ]]; then
+                tag_name=$(git describe --tags --exact-match "$head_sha_raw" 2>/dev/null || true)
+                if [[ -n "$tag_name" ]]; then
+                  echo "Detected tag at head_sha $head_sha_raw: $tag_name"
+                fi
+              fi
+            fi
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            # Direct tag push - use the tag name from the event
             tag_name="${{ github.ref_name }}"
+            echo "Detected direct tag push: $tag_name"
           else
-            git fetch --tags --force >/dev/null 2>&1 || true
-            tag_name=$(git describe --tags --exact-match 2>/dev/null || true)
+            # Not a tag context based on ref_type
+            # Don't use git describe here to avoid false positives
+            tag_name=""
           fi
 
           if [[ -n "$tag_name" ]]; then
