@@ -231,6 +231,21 @@ jobs:
 
           fi
 
+          # -------------------------------------------------------
+          # Extract head repository and commit SHA (for workflow_run, pull_request, or pull_request_target)
+          # IMPORTANT: Must be done BEFORE tag detection since tag detection uses head_sha_raw
+          # -------------------------------------------------------
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            head_repo_raw="${{ github.event.workflow_run.head_repository.full_name }}"
+            head_sha_raw="${{ github.event.workflow_run.head_sha }}"
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "pull_request_target" ]]; then
+            head_repo_raw="${{ github.event.pull_request.head.repo.full_name }}"
+            head_sha_raw="${{ github.event.pull_request.head.sha }}"
+          else
+            head_repo_raw=""
+            head_sha_raw=""
+          fi
+
           # Determine if this is a tag context
           tag_name=""
           if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
@@ -272,20 +287,6 @@ jobs:
             base_tag=$(sanitize "$tag_name")
           else
             base_tag="none"
-          fi
-
-          # -------------------------------------------------------
-          # Extract head repository and commit SHA (for workflow_run, pull_request, or pull_request_target)
-          # -------------------------------------------------------
-          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
-            head_repo_raw="${{ github.event.workflow_run.head_repository.full_name }}"
-            head_sha_raw="${{ github.event.workflow_run.head_sha }}"
-          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "pull_request_target" ]]; then
-            head_repo_raw="${{ github.event.pull_request.head.repo.full_name }}"
-            head_sha_raw="${{ github.event.pull_request.head.sha }}"
-          else
-            head_repo_raw=""
-            head_sha_raw=""
           fi
 
           if [[ -n "$head_repo_raw" && "$head_repo_raw" != "null" ]]; then
