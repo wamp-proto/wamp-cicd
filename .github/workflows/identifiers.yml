@@ -215,8 +215,8 @@ jobs:
               fi
             fi
 
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo " (2) Detected pull_request event - extracting PR context from this workflow"
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "pull_request_target" ]]; then
+            echo "(2) Detected pull_request / pull_request_target event - extracting PR context from this workflow"
 
             pr_number="pr${{ github.event.number }}"
             pr_repo=$(sanitize "${{ github.event.pull_request.head.repo.full_name }}")
@@ -247,12 +247,12 @@ jobs:
           fi
 
           # -------------------------------------------------------
-          # Extract head repository and commit SHA (for workflow_run or pull_request)
+          # Extract head repository and commit SHA (for workflow_run, pull_request, or pull_request_target)
           # -------------------------------------------------------
           if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             head_repo_raw="${{ github.event.workflow_run.head_repository.full_name }}"
             head_sha_raw="${{ github.event.workflow_run.head_sha }}"
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          elif [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "pull_request_target" ]]; then
             head_repo_raw="${{ github.event.pull_request.head.repo.full_name }}"
             head_sha_raw="${{ github.event.pull_request.head.sha }}"
           else
