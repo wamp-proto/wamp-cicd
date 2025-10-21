@@ -1,0 +1,152 @@
+name: 'Upload Artifact with SHA256 Verification'
+description: 'Upload artifacts with cryptographic chain-of-custody verification'
+author: 'WAMP Protocol'
+
+inputs:
+  name:
+    description: 'Artifact name'
+    required: true
+  path:
+    description: 'Path to directory containing files to upload'
+    required: true
+  retention-days:
+    description: 'Number of days to retain artifact'
+    required: false
+    default: '90'
+  if-no-files-found:
+    description: 'Behavior if no files found (error, warn, ignore)'
+    required: false
+    default: 'error'
+
+outputs:
+  artifact-id:
+    description: 'GitHub artifact ID'
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-url:
+    description: 'GitHub artifact URL'
+    value: ${{ steps.upload.outputs.artifact-url }}
+  meta-checksum:
+    description: 'SHA256 of CHECKSUMS.sha256 file'
+    value: ${{ steps.generate-checksums.outputs.meta-checksum }}
+  file-count:
+    description: 'Number of files checksummed (excluding checksum files)'
+    value: ${{ steps.generate-checksums.outputs.file-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate SHA256 checksums with chain-of-custody verification
+      id: generate-checksums
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "======================================================================"
+        echo "==> Generating SHA256 Checksums (Chain of Custody)"
+        echo "======================================================================"
+        echo ""
+        echo "Artifact: ${{ inputs.name }}"
+        echo "Path: ${{ inputs.path }}"
+        echo ""
+
+        # Change to target directory
+        cd "${{ inputs.path }}"
+
+        # Ensure all files are written to disk before checksumming
+        echo "Syncing filesystem before checksum generation..."
+        sync
+        echo "✅ Filesystem synced"
+        echo ""
+
+        # Find all files recursively (excluding any existing checksum files)
+        echo "Discovering files..."
+        FILES=$(find . -type f -not -name "CHECKSUMS.sha256*" | sort)
+        FILE_COUNT=$(echo "$FILES" | wc -l)
+
+        if [ -z "$FILES" ] || [ "$FILE_COUNT" -eq 0 ]; then
+          echo "❌ No files found in ${{ inputs.path }}"
+          exit 1
+        fi
+
+        echo "Found $FILE_COUNT files to checksum"
+        echo ""
+
+        # Generate CHECKSUMS.sha256 (relative paths)
+        echo "Computing SHA256 checksums..."
+        rm -f CHECKSUMS.sha256 CHECKSUMS.sha256.meta
+
+        echo "$FILES" | while IFS= read -r file; do
+          openssl sha256 "$file" >> CHECKSUMS.sha256
+        done
+
+        echo "✅ Generated CHECKSUMS.sha256 ($FILE_COUNT entries)"
+        echo ""
+
+        # Generate meta-checksum (checksum of the checksum file)
+        echo "Computing meta-checksum..."
+        META_CHECKSUM=$(openssl sha256 CHECKSUMS.sha256 | awk '{print $2}')
+        echo "$META_CHECKSUM" > CHECKSUMS.sha256.meta
+
+        echo "✅ Generated CHECKSUMS.sha256.meta"
+        echo "   Meta-checksum: $META_CHECKSUM"
+        echo ""
+
+        # Ensure checksum files are written to disk
+        echo "Syncing filesystem after checksum generation..."
+        sync
+        echo "✅ Filesystem synced"
+        echo ""
+
+        # Display summary
+        echo "======================================================================"
+        echo "Checksum Generation Summary"
+        echo "======================================================================"
+        echo "Files checksummed:    $FILE_COUNT"
+        echo "Checksum file:        CHECKSUMS.sha256"
+        echo "Meta-checksum file:   CHECKSUMS.sha256.meta"
+        echo "Meta-checksum value:  $META_CHECKSUM"
+        echo "======================================================================"
+        echo ""
+
+        # Output for GitHub Actions
+        echo "meta-checksum=$META_CHECKSUM" >> $GITHUB_OUTPUT
+        echo "file-count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+        # Display first few checksums for debugging
+        echo "First 5 checksums:"
+        head -5 CHECKSUMS.sha256 || cat CHECKSUMS.sha256
+        echo ""
+
+        if [ $(wc -l < CHECKSUMS.sha256) -gt 5 ]; then
+          echo "... ($(wc -l < CHECKSUMS.sha256) total entries)"
+          echo ""
+        fi
+
+    - name: Upload artifact with verification metadata
+      id: upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+
+    - name: Confirm upload completion
+      shell: bash
+      run: |
+        echo "======================================================================"
+        echo "==> Artifact Upload Complete"
+        echo "======================================================================"
+        echo ""
+        echo "Artifact Name:     ${{ inputs.name }}"
+        echo "Artifact ID:       ${{ steps.upload.outputs.artifact-id }}"
+        echo "Files uploaded:    ${{ steps.generate-checksums.outputs.file-count }} + 2 checksum files"
+        echo "Meta-checksum:     ${{ steps.generate-checksums.outputs.meta-checksum }}"
+        echo "Retention days:    ${{ inputs.retention-days }}"
+        echo ""
+        echo "✅ Artifact ready for verified download"
+        echo "======================================================================"
+
+branding:
+  icon: 'shield'
+  color: 'green'

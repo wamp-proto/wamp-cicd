@@ -1,0 +1,275 @@
+name: 'Download Artifact with SHA256 Verification'
+description: 'Download artifacts with automatic retry and cryptographic integrity verification'
+author: 'WAMP Protocol'
+
+inputs:
+  name:
+    description: 'Artifact name to download'
+    required: true
+  path:
+    description: 'Destination path for downloaded files'
+    required: false
+    default: './'
+  run-id:
+    description: 'Workflow run ID to download from (default: current run)'
+    required: false
+  github-token:
+    description: 'GitHub token for artifact download'
+    required: false
+    default: ${{ github.token }}
+  max-attempts:
+    description: 'Maximum download retry attempts'
+    required: false
+    default: '3'
+  retry-delay:
+    description: 'Delay between retries in seconds'
+    required: false
+    default: '60'
+
+outputs:
+  success:
+    description: 'true if download and verification succeeded'
+    value: ${{ steps.verify.outputs.success }}
+  file-count:
+    description: 'Number of files verified'
+    value: ${{ steps.verify.outputs.file-count }}
+  meta-checksum:
+    description: 'Meta-checksum of downloaded CHECKSUMS.sha256'
+    value: ${{ steps.verify.outputs.meta-checksum }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download and verify artifact with retry logic
+      id: verify
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.name }}
+        DOWNLOAD_PATH: ${{ inputs.path }}
+        RUN_ID: ${{ inputs.run-id }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+        RETRY_DELAY: ${{ inputs.retry-delay }}
+      run: |
+        set -euo pipefail
+
+        echo "======================================================================"
+        echo "==> Downloading Artifact with Verification (Chain of Custody)"
+        echo "======================================================================"
+        echo ""
+        echo "Artifact: $ARTIFACT_NAME"
+        echo "Destination: $DOWNLOAD_PATH"
+        echo "Max attempts: $MAX_ATTEMPTS"
+        echo "Retry delay: ${RETRY_DELAY}s"
+        echo ""
+
+        # Main retry loop
+        for attempt in $(seq 1 $MAX_ATTEMPTS); do
+          echo "────────────────────────────────────────────────────────────────────"
+          echo "Attempt $attempt of $MAX_ATTEMPTS"
+          echo "────────────────────────────────────────────────────────────────────"
+          echo ""
+
+          # Clean destination on retry
+          if [ $attempt -gt 1 ]; then
+            echo "Cleaning destination from previous failed attempt..."
+            rm -rf "${DOWNLOAD_PATH:?}"/*
+            mkdir -p "$DOWNLOAD_PATH"
+            echo ""
+          fi
+
+          # Download artifact
+          echo "Downloading artifact..."
+          DOWNLOAD_ARGS=(
+            --name "$ARTIFACT_NAME"
+            --path "$DOWNLOAD_PATH"
+          )
+
+          if [ -n "$RUN_ID" ]; then
+            DOWNLOAD_ARGS+=(--run-id "$RUN_ID")
+          fi
+
+          if ! gh artifact download "${DOWNLOAD_ARGS[@]}" 2>&1; then
+            echo "❌ Download failed"
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s..."
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached"
+              exit 1
+            fi
+          fi
+
+          echo "✅ Download completed"
+          echo ""
+
+          # Sync filesystem after download
+          echo "Syncing filesystem after download..."
+          sync
+          echo "✅ Filesystem synced"
+          echo ""
+
+          # Change to download path
+          cd "$DOWNLOAD_PATH"
+
+          # Verify checksum files exist
+          echo "Checking for verification files..."
+          if [ ! -f "CHECKSUMS.sha256" ]; then
+            echo "❌ CHECKSUMS.sha256 missing"
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s..."
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached"
+              exit 1
+            fi
+          fi
+
+          if [ ! -f "CHECKSUMS.sha256.meta" ]; then
+            echo "❌ CHECKSUMS.sha256.meta missing"
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s..."
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached"
+              exit 1
+            fi
+          fi
+
+          echo "✅ Verification files present"
+          echo ""
+
+          # Verify meta-checksum
+          echo "Verifying checksum file integrity..."
+          EXPECTED_META=$(cat CHECKSUMS.sha256.meta | tr -d ' \n')
+          ACTUAL_META=$(openssl sha256 CHECKSUMS.sha256 | awk '{print $2}')
+
+          if [ "$ACTUAL_META" != "$EXPECTED_META" ]; then
+            echo "❌ CHECKSUMS.sha256 corrupted during transfer!"
+            echo "   Expected meta-checksum: $EXPECTED_META"
+            echo "   Actual meta-checksum:   $ACTUAL_META"
+            echo ""
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s (GitHub storage may not be ready)..."
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached - persistent corruption detected"
+              exit 1
+            fi
+          fi
+
+          echo "✅ Checksum file integrity verified"
+          echo "   Meta-checksum: $ACTUAL_META"
+          echo ""
+
+          # Verify individual files
+          echo "Verifying individual file checksums..."
+          echo ""
+
+          HAS_ERRORS=0
+          FILES_VERIFIED=0
+          FILES_FAILED=0
+          declare -a VERIFIED_FILES
+          declare -a FAILED_FILES
+
+          while IFS= read -r line; do
+            # Parse openssl output: "SHA256(./file.whl)= checksum" or "SHA2-256(./file.whl)= checksum"
+            EXPECTED_CHECKSUM=$(echo "$line" | awk -F'= ' '{print $2}')
+            FILE_PATH=$(echo "$line" | sed 's/SHA\(2-\)\?256(\(.*\))=.*/\2/')
+
+            # Skip checksum files themselves
+            if [[ "$FILE_PATH" == *"CHECKSUMS.sha256"* ]]; then
+              continue
+            fi
+
+            if [ ! -f "$FILE_PATH" ]; then
+              echo "❌ Missing: $FILE_PATH"
+              FAILED_FILES+=("$FILE_PATH (missing)")
+              FILES_FAILED=$((FILES_FAILED + 1))
+              HAS_ERRORS=1
+              continue
+            fi
+
+            ACTUAL_CHECKSUM=$(openssl sha256 "$FILE_PATH" | awk '{print $2}')
+
+            if [ "$ACTUAL_CHECKSUM" = "$EXPECTED_CHECKSUM" ]; then
+              echo "✅ $(basename "$FILE_PATH")"
+              VERIFIED_FILES+=("$FILE_PATH")
+              FILES_VERIFIED=$((FILES_VERIFIED + 1))
+            else
+              echo "❌ $(basename "$FILE_PATH"): CHECKSUM MISMATCH!"
+              echo "   Expected: $EXPECTED_CHECKSUM"
+              echo "   Actual:   $ACTUAL_CHECKSUM"
+              FAILED_FILES+=("$FILE_PATH (mismatch)")
+              FILES_FAILED=$((FILES_FAILED + 1))
+              HAS_ERRORS=1
+            fi
+          done < CHECKSUMS.sha256
+
+          echo ""
+
+          # Summary table
+          echo "======================================================================"
+          echo "Verification Summary (Attempt $attempt/$MAX_ATTEMPTS)"
+          echo "======================================================================"
+          echo "Artifact:          $ARTIFACT_NAME"
+          echo "Meta-checksum:     $ACTUAL_META"
+          echo "Files verified:    $FILES_VERIFIED"
+          echo "Files failed:      $FILES_FAILED"
+          echo ""
+
+          if [ $HAS_ERRORS -eq 0 ]; then
+            echo "┌────────────────────────────────────────────────────────────────┐"
+            echo "│ ✅ SUCCESS - All files verified                                │"
+            echo "└────────────────────────────────────────────────────────────────┘"
+            echo ""
+
+            # Output for GitHub Actions
+            echo "success=true" >> $GITHUB_OUTPUT
+            echo "file-count=$FILES_VERIFIED" >> $GITHUB_OUTPUT
+            echo "meta-checksum=$ACTUAL_META" >> $GITHUB_OUTPUT
+
+            echo "======================================================================"
+            echo ""
+            exit 0
+          else
+            echo "┌────────────────────────────────────────────────────────────────┐"
+            echo "│ ❌ FAILED - Checksum verification errors detected              │"
+            echo "└────────────────────────────────────────────────────────────────┘"
+            echo ""
+
+            if [ ${#FAILED_FILES[@]} -gt 0 ]; then
+              echo "Failed files:"
+              for file in "${FAILED_FILES[@]}"; do
+                echo "  - $file"
+              done
+              echo ""
+            fi
+
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s..."
+              echo "======================================================================"
+              echo ""
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached - giving up"
+              echo "======================================================================"
+              echo ""
+
+              # Output for GitHub Actions
+              echo "success=false" >> $GITHUB_OUTPUT
+              echo "file-count=0" >> $GITHUB_OUTPUT
+
+              exit 1
+            fi
+          fi
+        done
+
+branding:
+  icon: 'download'
+  color: 'blue'
