@@ -234,6 +234,40 @@ runs:
           echo "   Meta-checksum: $ACTUAL_META"
           echo ""
 
+          # Self-verification: Extract expected meta-checksum from artifact name
+          echo "Verifying artifact name matches content (self-verification)..."
+          EXPECTED_META_FROM_NAME=$(echo "$ARTIFACT_NAME" | grep -oE '[a-f0-9]{64}$' || echo "")
+
+          if [ -n "$EXPECTED_META_FROM_NAME" ]; then
+            # Artifact name contains meta-checksum suffix - verify it matches content
+            if [ "$ACTUAL_META" != "$EXPECTED_META_FROM_NAME" ]; then
+              echo "❌ ARTIFACT NAME MISMATCH - GitHub served wrong artifact!"
+              echo ""
+              echo "This is a critical corruption bug in GitHub Actions infrastructure."
+              echo "The artifact name promises different content than what was delivered."
+              echo ""
+              echo "   Artifact name:           $ARTIFACT_NAME"
+              echo "   Expected meta-checksum:  $EXPECTED_META_FROM_NAME"
+              echo "   Actual meta-checksum:    $ACTUAL_META"
+              echo ""
+              if [ $attempt -lt $MAX_ATTEMPTS ]; then
+                echo "⏳ Retrying in ${RETRY_DELAY}s (GitHub may have served wrong artifact)..."
+                sleep "$RETRY_DELAY"
+                continue
+              else
+                echo "❌ Max retry attempts reached - persistent artifact mismatch"
+                echo "   GitHub's artifact storage appears to be corrupted or confused."
+                exit 1
+              fi
+            fi
+            echo "✅ Artifact name matches content (meta-checksum verified)"
+            echo "   Self-verification confirms artifact identity"
+          else
+            echo "⚠️  Artifact name does not contain meta-checksum suffix"
+            echo "   Skipping self-verification (legacy artifact naming)"
+          fi
+          echo ""
+
           # Verify individual files
           echo "Verifying individual file checksums..."
           echo ""
