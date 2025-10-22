@@ -78,18 +78,52 @@ runs:
             echo ""
           fi
 
-          # Download artifact
-          echo "Downloading artifact..."
-          DOWNLOAD_ARGS=(
-            --name "$ARTIFACT_NAME"
-            --path "$DOWNLOAD_PATH"
-          )
+          # Download artifact using GitHub API
+          echo "Downloading artifact via GitHub API..."
 
-          if [ -n "$RUN_ID" ]; then
-            DOWNLOAD_ARGS+=(--run-id "$RUN_ID")
+          # Determine the run ID to use
+          EFFECTIVE_RUN_ID="${RUN_ID:-$GITHUB_RUN_ID}"
+          echo "Using run ID: $EFFECTIVE_RUN_ID"
+
+          # Get artifact ID by name
+          echo "Looking up artifact ID for: $ARTIFACT_NAME"
+          ARTIFACT_JSON=$(gh api \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$EFFECTIVE_RUN_ID/artifacts" \
+            --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\")" 2>&1)
+
+          if [ -z "$ARTIFACT_JSON" ]; then
+            echo "❌ Artifact not found: $ARTIFACT_NAME"
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s..."
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached"
+              exit 1
+            fi
           fi
 
-          if ! gh artifact download "${DOWNLOAD_ARGS[@]}" 2>&1; then
+          ARTIFACT_ID=$(echo "$ARTIFACT_JSON" | jq -r '.id')
+          if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+            echo "❌ Failed to parse artifact ID"
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s..."
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached"
+              exit 1
+            fi
+          fi
+
+          echo "Found artifact ID: $ARTIFACT_ID"
+
+          # Create destination directory
+          mkdir -p "$DOWNLOAD_PATH"
+
+          # Download the artifact zip
+          echo "Downloading artifact zip..."
+          if ! gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$DOWNLOAD_PATH/artifact.zip" 2>&1; then
             echo "❌ Download failed"
             if [ $attempt -lt $MAX_ATTEMPTS ]; then
               echo "⏳ Retrying in ${RETRY_DELAY}s..."
@@ -100,6 +134,24 @@ runs:
               exit 1
             fi
           fi
+
+          # Unzip to destination
+          echo "Extracting artifact..."
+          if ! unzip -q "$DOWNLOAD_PATH/artifact.zip" -d "$DOWNLOAD_PATH" 2>&1; then
+            echo "❌ Extraction failed"
+            rm -f "$DOWNLOAD_PATH/artifact.zip"
+            if [ $attempt -lt $MAX_ATTEMPTS ]; then
+              echo "⏳ Retrying in ${RETRY_DELAY}s..."
+              sleep "$RETRY_DELAY"
+              continue
+            else
+              echo "❌ Max retry attempts reached"
+              exit 1
+            fi
+          fi
+
+          # Clean up zip file
+          rm -f "$DOWNLOAD_PATH/artifact.zip"
 
           echo "✅ Download completed"
           echo ""
