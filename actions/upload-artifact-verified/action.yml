@@ -85,6 +85,13 @@ runs:
         echo "✅ Generated CHECKSUMS.sha256 ($FILE_COUNT entries)"
         echo ""
 
+        # Normalize line endings to Unix (LF) for cross-platform consistency
+        echo "Normalizing line endings to Unix format..."
+        tr -d '\r' < CHECKSUMS.sha256 > CHECKSUMS.sha256.tmp
+        mv CHECKSUMS.sha256.tmp CHECKSUMS.sha256
+        echo "✅ Line endings normalized (CRLF → LF)"
+        echo ""
+
         # Generate meta-checksum (checksum of the checksum file)
         echo "Computing meta-checksum..."
         META_CHECKSUM=$(openssl sha256 CHECKSUMS.sha256 | awk '{print $2}')

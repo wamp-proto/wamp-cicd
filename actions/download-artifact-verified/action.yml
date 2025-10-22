@@ -181,6 +181,18 @@ runs:
           # Change to download path
           cd "$DOWNLOAD_PATH"
 
+          # Normalize line endings to Unix format (defense in depth)
+          # ZIP extraction or text file auto-conversion could introduce CRLF
+          echo "Normalizing checksum file line endings..."
+          if [ -f "CHECKSUMS.sha256" ]; then
+            tr -d '\r' < CHECKSUMS.sha256 > CHECKSUMS.sha256.tmp
+            mv CHECKSUMS.sha256.tmp CHECKSUMS.sha256
+            echo "✅ Line endings normalized (CRLF → LF)"
+          else
+            echo "⚠️  CHECKSUMS.sha256 not found yet, skipping normalization"
+          fi
+          echo ""
+
           # Verify checksum files exist
           echo "Checking for verification files..."
           if [ ! -f "CHECKSUMS.sha256" ]; then
