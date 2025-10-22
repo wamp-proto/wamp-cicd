@@ -25,6 +25,10 @@ inputs:
     description: 'Delay between retries in seconds'
     required: false
     default: '60'
+  overwrite:
+    description: 'Whether to overwrite existing files during extraction (default: false for safety)'
+    required: false
+    default: 'false'
 
 outputs:
   success:
@@ -50,6 +54,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         MAX_ATTEMPTS: ${{ inputs.max-attempts }}
         RETRY_DELAY: ${{ inputs.retry-delay }}
+        OVERWRITE: ${{ inputs.overwrite }}
       run: |
         set -euo pipefail
 
@@ -137,7 +142,18 @@ runs:
 
           # Unzip to destination
           echo "Extracting artifact..."
-          if ! unzip -o -q "$DOWNLOAD_PATH/artifact.zip" -d "$DOWNLOAD_PATH" 2>&1; then
+
+          # Build unzip command with optional overwrite flag
+          UNZIP_FLAGS="-q"
+          if [ "$OVERWRITE" = "true" ]; then
+            UNZIP_FLAGS="$UNZIP_FLAGS -o"
+            echo "Overwrite mode: enabled (will replace existing files)"
+          else
+            UNZIP_FLAGS="$UNZIP_FLAGS -n"
+            echo "Overwrite mode: disabled (will fail if files exist)"
+          fi
+
+          if ! unzip $UNZIP_FLAGS "$DOWNLOAD_PATH/artifact.zip" -d "$DOWNLOAD_PATH" 2>&1; then
             echo "❌ Extraction failed"
             rm -f "$DOWNLOAD_PATH/artifact.zip"
             if [ $attempt -lt $MAX_ATTEMPTS ]; then
