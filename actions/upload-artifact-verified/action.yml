@@ -25,6 +25,9 @@ outputs:
   artifact-url:
     description: 'GitHub artifact URL'
     value: ${{ steps.upload.outputs.artifact-url }}
+  artifact-name:
+    description: 'Full unique artifact name (includes meta-checksum suffix)'
+    value: ${{ steps.generate-checksums.outputs.artifact-name }}
   meta-checksum:
     description: 'SHA256 of CHECKSUMS.sha256 file'
     value: ${{ steps.generate-checksums.outputs.meta-checksum }}
@@ -97,6 +100,9 @@ runs:
         echo "✅ Filesystem synced"
         echo ""
 
+        # Generate unique artifact name with meta-checksum suffix
+        ARTIFACT_NAME="${{ inputs.name }}-${META_CHECKSUM}"
+
         # Display summary
         echo "======================================================================"
         echo "Checksum Generation Summary"
@@ -105,10 +111,12 @@ runs:
         echo "Checksum file:        CHECKSUMS.sha256"
         echo "Meta-checksum file:   CHECKSUMS.sha256.meta"
         echo "Meta-checksum value:  $META_CHECKSUM"
+        echo "Unique artifact name: $ARTIFACT_NAME"
         echo "======================================================================"
         echo ""
 
         # Output for GitHub Actions
+        echo "artifact-name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
         echo "meta-checksum=$META_CHECKSUM" >> $GITHUB_OUTPUT
         echo "file-count=$FILE_COUNT" >> $GITHUB_OUTPUT
 
@@ -126,7 +134,7 @@ runs:
       id: upload
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ inputs.name }}
+        name: ${{ steps.generate-checksums.outputs.artifact-name }}
         path: ${{ inputs.path }}
         retention-days: ${{ inputs.retention-days }}
         if-no-files-found: ${{ inputs.if-no-files-found }}
@@ -138,7 +146,8 @@ runs:
         echo "==> Artifact Upload Complete"
         echo "======================================================================"
         echo ""
-        echo "Artifact Name:     ${{ inputs.name }}"
+        echo "Base name:         ${{ inputs.name }}"
+        echo "Unique name:       ${{ steps.generate-checksums.outputs.artifact-name }}"
         echo "Artifact ID:       ${{ steps.upload.outputs.artifact-id }}"
         echo "Files uploaded:    ${{ steps.generate-checksums.outputs.file-count }} + 2 checksum files"
         echo "Meta-checksum:     ${{ steps.generate-checksums.outputs.meta-checksum }}"
