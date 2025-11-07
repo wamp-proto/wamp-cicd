@@ -58,6 +58,20 @@ inputs:
     required: false
     default: 'false'
 
+  keep-metadata:
+    description: |
+      Keep metadata files (CHECKSUMS, VALIDATION.txt, signatures).
+
+      If 'true', metadata files are kept (useful for GitHub releases where
+      users need to verify downloads).
+
+      If 'false', metadata files are removed (required for PyPI uploads,
+      as PyPI doesn't accept these files).
+
+      Default: 'false' (remove metadata, suitable for PyPI)
+    required: false
+    default: 'false'
+
 outputs:
   validation-passed:
     description: 'Whether validation passed completely (true/false)'
@@ -115,6 +129,7 @@ runs:
         MODE: ${{ inputs.mode }}
         ALLOW_DEV_WHEELS: ${{ inputs.allow-dev-wheels }}
         ALLOW_EXTRA_WHEELS: ${{ inputs.allow-extra-wheels }}
+        KEEP_METADATA: ${{ inputs.keep-metadata }}
       run: |
         set -euo pipefail
 
@@ -126,6 +141,7 @@ runs:
         echo "Validation mode: $MODE"
         echo "Allow dev wheels (linux_*): $ALLOW_DEV_WHEELS"
         echo "Allow extra wheels: $ALLOW_EXTRA_WHEELS"
+        echo "Keep metadata files: $KEEP_METADATA"
         echo ""
 
         # Check if distdir exists
@@ -419,18 +435,31 @@ runs:
           fi
         done
 
-        # Always remove metadata files (not for PyPI)
-        echo "==> Checking for metadata files to remove..."
-        echo ""
-        for pattern in "CHECKSUMS*.sha256" "CHECKSUMS*.meta" "VALIDATION.txt" "*.sig" "*.asc"; do
-          for file in $pattern; do
-            if [ -f "$file" ]; then
-              echo "🗑️  $file (metadata, not for PyPI)"
-              FILES_TO_REMOVE+=("$file")
-            fi
+        # Remove metadata files (unless keep-metadata is true)
+        if [ "$KEEP_METADATA" = "false" ]; then
+          echo "==> Checking for metadata files to remove..."
+          echo ""
+          for pattern in "CHECKSUMS*.sha256" "CHECKSUMS*.meta" "VALIDATION.txt" "*.sig" "*.asc"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                echo "🗑️  $file (metadata, not for PyPI)"
+                FILES_TO_REMOVE+=("$file")
+              fi
+            done
           done
-        done
-        echo ""
+          echo ""
+        else
+          echo "==> Keeping metadata files (keep-metadata: true)"
+          echo ""
+          for pattern in "CHECKSUMS*.sha256" "CHECKSUMS*.meta" "VALIDATION.txt" "*.sig" "*.asc"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                echo "✓ $file (kept for verification)"
+              fi
+            done
+          done
+          echo ""
+        fi
 
         # Summary
         echo "======================================================================"
