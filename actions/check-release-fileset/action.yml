@@ -1,0 +1,580 @@
+name: 'Check and Clean Release Fileset'
+description: 'Validate and clean distribution directory for PyPI upload - ensures only required wheels and source dist are present'
+author: 'WAMP Protocol'
+
+inputs:
+  distdir:
+    description: 'Directory containing distribution files to validate and clean'
+    required: false
+    default: 'dist'
+
+  targets:
+    description: |
+      Newline or comma-separated list of required wheel targets and source distribution.
+
+      Format: {impl}{version}-{platform}-{arch}[-{abi_tag}]
+
+      Components:
+        - impl: 'cpy' or 'cp' (CPython), 'pypy' or 'pp' (PyPy)
+        - version: '311', '312', '313', '314', '314t' (free-threaded)
+        - platform: 'linux', 'macos', 'win'
+        - arch: 'x86_64', 'aarch64', 'arm64', 'amd64'
+        - abi_tag: 'manylinux_2_28', 'manylinux_2_34', etc. (optional for non-Linux)
+
+      Special keywords:
+        - 'source' or 'sdist': Require source distribution (.tar.gz)
+        - 'py3-none-any': Universal pure Python wheel
+
+      Examples:
+        cpy311-linux-x86_64-manylinux_2_34
+        pypy311-linux-aarch64-manylinux_2_36
+        cpy312-macos-arm64
+        cpy311-win-amd64
+        py3-none-any
+        source
+    required: true
+
+  mode:
+    description: |
+      Validation mode:
+        - 'strict': Fail if required files missing (production releases)
+        - 'check': Check and report, but don't fail build (useful for debugging)
+    required: false
+    default: 'strict'
+
+  allow-dev-wheels:
+    description: |
+      Allow linux_* wheels (not manylinux_*) to pass validation.
+      Should be 'false' for PyPI uploads (PyPI requires manylinux_* tags).
+      Set to 'true' only for local development builds.
+    required: false
+    default: 'false'
+
+  allow-extra-wheels:
+    description: |
+      Allow extra wheels not in targets list.
+      If 'false', extra wheels are removed (cleanup).
+      If 'true', extra wheels trigger warnings but are kept.
+    required: false
+    default: 'false'
+
+outputs:
+  validation-passed:
+    description: 'Whether validation passed completely (true/false)'
+    value: ${{ steps.validate.outputs.validation-passed }}
+
+  wheels-found:
+    description: 'Number of wheels found in distdir'
+    value: ${{ steps.validate.outputs.wheels-found }}
+
+  wheels-required:
+    description: 'Number of wheels required by targets specification'
+    value: ${{ steps.validate.outputs.wheels-required }}
+
+  wheels-matched:
+    description: 'Number of wheels that matched required targets'
+    value: ${{ steps.validate.outputs.wheels-matched }}
+
+  wheels-missing:
+    description: 'Number of required wheels missing'
+    value: ${{ steps.validate.outputs.wheels-missing }}
+
+  wheels-extra:
+    description: 'Number of extra wheels found (not in targets)'
+    value: ${{ steps.validate.outputs.wheels-extra }}
+
+  wheels-removed:
+    description: 'Number of wheels removed during cleanup'
+    value: ${{ steps.validate.outputs.wheels-removed }}
+
+  sdist-found:
+    description: 'Whether source distribution was found (true/false)'
+    value: ${{ steps.validate.outputs.sdist-found }}
+
+  sdist-required:
+    description: 'Whether source distribution was required (true/false)'
+    value: ${{ steps.validate.outputs.sdist-required }}
+
+  files-removed-count:
+    description: 'Total number of files removed (wheels + metadata)'
+    value: ${{ steps.validate.outputs.files-removed-count }}
+
+  final-file-count:
+    description: 'Number of files remaining after cleanup'
+    value: ${{ steps.validate.outputs.final-file-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate and clean release fileset
+      id: validate
+      shell: bash
+      env:
+        DISTDIR: ${{ inputs.distdir }}
+        TARGETS: ${{ inputs.targets }}
+        MODE: ${{ inputs.mode }}
+        ALLOW_DEV_WHEELS: ${{ inputs.allow-dev-wheels }}
+        ALLOW_EXTRA_WHEELS: ${{ inputs.allow-extra-wheels }}
+      run: |
+        set -euo pipefail
+
+        echo "======================================================================"
+        echo "==> PyPI Release Fileset Validation & Cleanup"
+        echo "======================================================================"
+        echo ""
+        echo "Distribution directory: $DISTDIR"
+        echo "Validation mode: $MODE"
+        echo "Allow dev wheels (linux_*): $ALLOW_DEV_WHEELS"
+        echo "Allow extra wheels: $ALLOW_EXTRA_WHEELS"
+        echo ""
+
+        # Check if distdir exists
+        if [ ! -d "$DISTDIR" ]; then
+          echo "❌ ERROR: Distribution directory not found: $DISTDIR"
+          exit 1
+        fi
+
+        cd "$DISTDIR"
+
+        # Parse targets into array
+        echo "==> Parsing target specifications..."
+        echo ""
+
+        declare -a TARGET_SPECS
+        declare -a REQUIRED_IMPLS
+        declare -a REQUIRED_VERSIONS
+        declare -a REQUIRED_PLATFORMS
+        declare -a REQUIRED_ARCHS
+        declare -a REQUIRED_ABI_TAGS
+        SDIST_REQUIRED=false
+
+        # Normalize targets: handle both newlines and commas
+        TARGETS_NORMALIZED=$(echo "$TARGETS" | tr ',' '\n' | tr -s ' ' | sed '/^$/d')
+
+        TARGET_COUNT=0
+        while IFS= read -r target; do
+          # Trim whitespace
+          target=$(echo "$target" | xargs)
+
+          # Skip empty lines
+          [ -z "$target" ] && continue
+
+          # Handle special keywords
+          if [ "$target" = "source" ] || [ "$target" = "sdist" ]; then
+            SDIST_REQUIRED=true
+            echo "  ✓ source distribution (required)"
+            continue
+          fi
+
+          # Handle pure Python wheels
+          if [ "$target" = "py3-none-any" ]; then
+            REQUIRED_IMPLS[TARGET_COUNT]="py3"
+            REQUIRED_VERSIONS[TARGET_COUNT]="none"
+            REQUIRED_PLATFORMS[TARGET_COUNT]="none"
+            REQUIRED_ARCHS[TARGET_COUNT]="any"
+            REQUIRED_ABI_TAGS[TARGET_COUNT]=""
+            TARGET_SPECS[TARGET_COUNT]="$target"
+            echo "  ✓ $target (universal wheel)"
+            TARGET_COUNT=$((TARGET_COUNT + 1))
+            continue
+          fi
+
+          # Parse wheel target: {impl}{version}-{platform}-{arch}[-{abi_tag}]
+          # Examples: cpy311-linux-x86_64-manylinux_2_34, pypy311-macos-arm64
+
+          if [[ "$target" =~ ^(cp|cpy|pp|pypy)([0-9]+t?)-([a-z]+)-([a-z0-9_]+)(-([a-z0-9_]+))?$ ]]; then
+            impl_raw="${BASH_REMATCH[1]}"
+            version="${BASH_REMATCH[2]}"
+            platform="${BASH_REMATCH[3]}"
+            arch="${BASH_REMATCH[4]}"
+            abi_tag="${BASH_REMATCH[6]}"
+
+            # Normalize implementation name
+            case "$impl_raw" in
+              cp|cpy) impl="cp" ;;
+              pp|pypy) impl="pp" ;;
+              *) impl="$impl_raw" ;;
+            esac
+
+            REQUIRED_IMPLS[TARGET_COUNT]="$impl"
+            REQUIRED_VERSIONS[TARGET_COUNT]="$version"
+            REQUIRED_PLATFORMS[TARGET_COUNT]="$platform"
+            REQUIRED_ARCHS[TARGET_COUNT]="$arch"
+            REQUIRED_ABI_TAGS[TARGET_COUNT]="$abi_tag"
+            TARGET_SPECS[TARGET_COUNT]="$target"
+
+            if [ -n "$abi_tag" ]; then
+              echo "  ✓ $target"
+            else
+              echo "  ✓ $target (no ABI tag specified)"
+            fi
+
+            TARGET_COUNT=$((TARGET_COUNT + 1))
+          else
+            echo "  ⚠️  WARNING: Invalid target format: $target"
+            echo "     Expected: {impl}{version}-{platform}-{arch}[-{abi_tag}]"
+          fi
+        done <<< "$TARGETS_NORMALIZED"
+
+        echo ""
+        echo "Parsed $TARGET_COUNT wheel target(s)"
+        if [ "$SDIST_REQUIRED" = "true" ]; then
+          echo "Source distribution: required"
+        else
+          echo "Source distribution: not required"
+        fi
+        echo ""
+
+        # Inventory existing files
+        echo "==> Scanning distribution directory..."
+        echo ""
+
+        WHEELS_FOUND=0
+        SDIST_FOUND=false
+        WHEELS_MATCHED=0
+        WHEELS_EXTRA=0
+        FILES_TO_REMOVE=()
+
+        declare -a FOUND_WHEELS
+        declare -a MATCHED_WHEELS
+        declare -a EXTRA_WHEELS
+        declare -a MISSING_TARGETS
+
+        # Track which targets were matched
+        declare -a TARGET_MATCHED
+        for ((i=0; i<TARGET_COUNT; i++)); do
+          TARGET_MATCHED[i]=false
+        done
+
+        # Check for source distribution
+        for tarball in *.tar.gz; do
+          if [ -f "$tarball" ]; then
+            SDIST_FOUND=true
+            echo "✅ Found source distribution: $tarball"
+          fi
+        done
+
+        # Check for wheels
+        for wheel in *.whl; do
+          [ ! -f "$wheel" ] && continue
+
+          WHEELS_FOUND=$((WHEELS_FOUND + 1))
+          FOUND_WHEELS+=("$wheel")
+
+          # Extract wheel tags from filename
+          # Format: {distribution}-{version}(-{build})?-{python}-{abi}-{platform}.whl
+          # Example: zlmdb-25.10.2-cp311-cp311-manylinux_2_34_x86_64.whl
+
+          if [[ "$wheel" =~ -([a-z0-9]+)-([a-z0-9]+)-([-_a-z0-9]+)\.whl$ ]]; then
+            wheel_python="${BASH_REMATCH[1]}"
+            wheel_abi="${BASH_REMATCH[2]}"
+            wheel_platform="${BASH_REMATCH[3]}"
+
+            # Check for dev wheels (linux_* instead of manylinux_*)
+            IS_DEV_WHEEL=false
+            if [[ "$wheel_platform" =~ ^linux_ ]]; then
+              IS_DEV_WHEEL=true
+            fi
+
+            # Try to match against targets
+            WHEEL_MATCHED=false
+
+            for ((i=0; i<TARGET_COUNT; i++)); do
+              req_impl="${REQUIRED_IMPLS[i]}"
+              req_version="${REQUIRED_VERSIONS[i]}"
+              req_platform="${REQUIRED_PLATFORMS[i]}"
+              req_arch="${REQUIRED_ARCHS[i]}"
+              req_abi_tag="${REQUIRED_ABI_TAGS[i]}"
+
+              # Handle pure Python wheels
+              if [ "$req_impl" = "py3" ]; then
+                if [[ "$wheel_python" =~ ^py3 ]] && [ "$wheel_abi" = "none" ] && [ "$wheel_platform" = "any" ]; then
+                  WHEEL_MATCHED=true
+                  TARGET_MATCHED[i]=true
+                  MATCHED_WHEELS+=("$wheel → ${TARGET_SPECS[i]}")
+                  break
+                fi
+                continue
+              fi
+
+              # Match implementation and version
+              # CPython: cp311, cp312, etc.
+              # PyPy: pp311, pp38, pypy311_pp73, etc.
+
+              python_tag_matches=false
+              if [ "$req_impl" = "cp" ]; then
+                if [[ "$wheel_python" =~ ^cp${req_version} ]]; then
+                  python_tag_matches=true
+                fi
+              elif [ "$req_impl" = "pp" ]; then
+                if [[ "$wheel_python" =~ ^(pp|pypy)${req_version} ]]; then
+                  python_tag_matches=true
+                fi
+              fi
+
+              if [ "$python_tag_matches" = "false" ]; then
+                continue
+              fi
+
+              # Match platform
+              platform_matches=false
+              case "$req_platform" in
+                linux)
+                  if [[ "$wheel_platform" =~ ^(linux|manylinux|musllinux)_ ]]; then
+                    platform_matches=true
+                  fi
+                  ;;
+                macos)
+                  if [[ "$wheel_platform" =~ ^macosx_ ]]; then
+                    platform_matches=true
+                  fi
+                  ;;
+                win)
+                  if [[ "$wheel_platform" =~ ^win ]]; then
+                    platform_matches=true
+                  fi
+                  ;;
+              esac
+
+              if [ "$platform_matches" = "false" ]; then
+                continue
+              fi
+
+              # Match architecture
+              arch_matches=false
+              case "$req_arch" in
+                x86_64|amd64)
+                  if [[ "$wheel_platform" =~ (x86_64|amd64) ]]; then
+                    arch_matches=true
+                  fi
+                  ;;
+                aarch64|arm64)
+                  if [[ "$wheel_platform" =~ (aarch64|arm64) ]]; then
+                    arch_matches=true
+                  fi
+                  ;;
+                *)
+                  if [[ "$wheel_platform" =~ $req_arch ]]; then
+                    arch_matches=true
+                  fi
+                  ;;
+              esac
+
+              if [ "$arch_matches" = "false" ]; then
+                continue
+              fi
+
+              # For Linux wheels, check ABI tag if specified
+              if [ "$req_platform" = "linux" ] && [ -n "$req_abi_tag" ]; then
+                if [[ ! "$wheel_platform" =~ $req_abi_tag ]]; then
+                  continue
+                fi
+              fi
+
+              # All checks passed - wheel matches this target
+              WHEEL_MATCHED=true
+              TARGET_MATCHED[i]=true
+              MATCHED_WHEELS+=("$wheel → ${TARGET_SPECS[i]}")
+              break
+            done
+
+            if [ "$WHEEL_MATCHED" = "true" ]; then
+              WHEELS_MATCHED=$((WHEELS_MATCHED + 1))
+
+              # But if it's a dev wheel and we don't allow them, mark for removal
+              if [ "$IS_DEV_WHEEL" = "true" ] && [ "$ALLOW_DEV_WHEELS" = "false" ]; then
+                echo "🗑️  $wheel (matched target, but dev wheel will be removed)"
+                FILES_TO_REMOVE+=("$wheel")
+              else
+                echo "✅ $wheel (matches target)"
+              fi
+            else
+              WHEELS_EXTRA=$((WHEELS_EXTRA + 1))
+              EXTRA_WHEELS+=("$wheel")
+
+              if [ "$ALLOW_EXTRA_WHEELS" = "false" ]; then
+                echo "🗑️  $wheel (extra, will be removed)"
+                FILES_TO_REMOVE+=("$wheel")
+              else
+                echo "⚠️  $wheel (extra, allowed)"
+              fi
+            fi
+          else
+            echo "⚠️  $wheel (invalid wheel filename format)"
+            WHEELS_EXTRA=$((WHEELS_EXTRA + 1))
+            if [ "$ALLOW_EXTRA_WHEELS" = "false" ]; then
+              FILES_TO_REMOVE+=("$wheel")
+            fi
+          fi
+        done
+
+        echo ""
+
+        # Check for missing targets
+        WHEELS_MISSING=0
+        for ((i=0; i<TARGET_COUNT; i++)); do
+          if [ "${TARGET_MATCHED[i]}" = "false" ]; then
+            WHEELS_MISSING=$((WHEELS_MISSING + 1))
+            MISSING_TARGETS+=("${TARGET_SPECS[i]}")
+          fi
+        done
+
+        # Always remove metadata files (not for PyPI)
+        echo "==> Checking for metadata files to remove..."
+        echo ""
+        for pattern in "CHECKSUMS*.sha256" "CHECKSUMS*.meta" "VALIDATION.txt" "*.sig" "*.asc"; do
+          for file in $pattern; do
+            if [ -f "$file" ]; then
+              echo "🗑️  $file (metadata, not for PyPI)"
+              FILES_TO_REMOVE+=("$file")
+            fi
+          done
+        done
+        echo ""
+
+        # Summary
+        echo "======================================================================"
+        echo "==> Validation Summary"
+        echo "======================================================================"
+        echo ""
+        echo "Wheels:"
+        echo "  Found:     $WHEELS_FOUND"
+        echo "  Required:  $TARGET_COUNT"
+        echo "  Matched:   $WHEELS_MATCHED"
+        echo "  Missing:   $WHEELS_MISSING"
+        echo "  Extra:     $WHEELS_EXTRA"
+        echo ""
+        echo "Source distribution:"
+        if [ "$SDIST_REQUIRED" = "true" ]; then
+          if [ "$SDIST_FOUND" = "true" ]; then
+            echo "  Required:  yes"
+            echo "  Found:     yes ✓"
+          else
+            echo "  Required:  yes"
+            echo "  Found:     no ✗"
+          fi
+        else
+          if [ "$SDIST_FOUND" = "true" ]; then
+            echo "  Required:  no"
+            echo "  Found:     yes (will be kept)"
+          else
+            echo "  Required:  no"
+            echo "  Found:     no"
+          fi
+        fi
+        echo ""
+
+        # Report missing targets
+        if [ $WHEELS_MISSING -gt 0 ]; then
+          echo "❌ Missing required wheels:"
+          for target in "${MISSING_TARGETS[@]}"; do
+            echo "   - $target"
+          done
+          echo ""
+        fi
+
+        # Report extra wheels
+        if [ $WHEELS_EXTRA -gt 0 ] && [ "$ALLOW_EXTRA_WHEELS" = "false" ]; then
+          echo "⚠️  Extra wheels (will be removed):"
+          for wheel in "${EXTRA_WHEELS[@]}"; do
+            echo "   - $wheel"
+          done
+          echo ""
+        fi
+
+        # Perform cleanup
+        WHEELS_REMOVED=0
+        FILES_REMOVED_COUNT=0
+
+        if [ ${#FILES_TO_REMOVE[@]} -gt 0 ]; then
+          echo "==> Removing unwanted files..."
+          echo ""
+          for file in "${FILES_TO_REMOVE[@]}"; do
+            if [ -f "$file" ]; then
+              echo "  Removing: $file"
+              rm -f "$file"
+              FILES_REMOVED_COUNT=$((FILES_REMOVED_COUNT + 1))
+
+              if [[ "$file" =~ \.whl$ ]]; then
+                WHEELS_REMOVED=$((WHEELS_REMOVED + 1))
+              fi
+            fi
+          done
+          echo ""
+          echo "Removed $FILES_REMOVED_COUNT file(s)"
+          echo ""
+        fi
+
+        # Final inventory
+        FINAL_FILE_COUNT=$(find . -maxdepth 1 -type f | wc -l)
+
+        echo "==> Final inventory:"
+        echo ""
+        ls -lh
+        echo ""
+        echo "Total files remaining: $FINAL_FILE_COUNT"
+        echo ""
+
+        # Determine validation result
+        VALIDATION_PASSED=true
+
+        # Check for missing wheels
+        if [ $WHEELS_MISSING -gt 0 ]; then
+          echo "❌ VALIDATION FAILED: Missing required wheels"
+          VALIDATION_PASSED=false
+        fi
+
+        # Check for missing source distribution
+        if [ "$SDIST_REQUIRED" = "true" ] && [ "$SDIST_FOUND" = "false" ]; then
+          echo "❌ VALIDATION FAILED: Missing required source distribution"
+          VALIDATION_PASSED=false
+        fi
+
+        # Check for extra wheels in strict mode
+        if [ $WHEELS_EXTRA -gt 0 ] && [ "$ALLOW_EXTRA_WHEELS" = "true" ]; then
+          echo "⚠️  WARNING: Extra wheels present (allowed by configuration)"
+        fi
+
+        # Output summary
+        echo "======================================================================"
+        if [ "$VALIDATION_PASSED" = "true" ]; then
+          echo "✅ VALIDATION PASSED"
+          echo "======================================================================"
+          echo ""
+          echo "All required files present. Distribution is ready for PyPI upload."
+        else
+          echo "❌ VALIDATION FAILED"
+          echo "======================================================================"
+          echo ""
+          echo "Distribution does not meet requirements."
+
+          if [ "$MODE" = "check" ]; then
+            echo ""
+            echo "Mode: check (continuing despite failures)"
+          fi
+        fi
+        echo ""
+
+        # Set outputs
+        echo "validation-passed=$VALIDATION_PASSED" >> $GITHUB_OUTPUT
+        echo "wheels-found=$WHEELS_FOUND" >> $GITHUB_OUTPUT
+        echo "wheels-required=$TARGET_COUNT" >> $GITHUB_OUTPUT
+        echo "wheels-matched=$WHEELS_MATCHED" >> $GITHUB_OUTPUT
+        echo "wheels-missing=$WHEELS_MISSING" >> $GITHUB_OUTPUT
+        echo "wheels-extra=$WHEELS_EXTRA" >> $GITHUB_OUTPUT
+        echo "wheels-removed=$WHEELS_REMOVED" >> $GITHUB_OUTPUT
+        echo "sdist-found=$SDIST_FOUND" >> $GITHUB_OUTPUT
+        echo "sdist-required=$SDIST_REQUIRED" >> $GITHUB_OUTPUT
+        echo "files-removed-count=$FILES_REMOVED_COUNT" >> $GITHUB_OUTPUT
+        echo "final-file-count=$FINAL_FILE_COUNT" >> $GITHUB_OUTPUT
+
+        # Exit based on mode
+        if [ "$VALIDATION_PASSED" = "false" ] && [ "$MODE" = "strict" ]; then
+          exit 1
+        fi
+
+        exit 0
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
