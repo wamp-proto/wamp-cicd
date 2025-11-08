@@ -338,7 +338,9 @@ runs:
               platform_matches=false
               case "$req_platform" in
                 linux)
-                  if [[ "$wheel_platform" =~ ^(linux|manylinux|musllinux)_ ]]; then
+                  # Match linux_, manylinux (with or without underscore), musllinux
+                  # Examples: linux_x86_64, manylinux_2_34_x86_64, manylinux2014_aarch64
+                  if [[ "$wheel_platform" =~ ^(linux_|manylinux|musllinux) ]]; then
                     platform_matches=true
                   fi
                   ;;
@@ -362,12 +364,14 @@ runs:
               arch_matches=false
               case "$req_arch" in
                 x86_64|amd64)
-                  if [[ "$wheel_platform" =~ (x86_64|amd64) ]]; then
+                  # Match x86_64, amd64, or universal2 (macOS universal binaries work on both archs)
+                  if [[ "$wheel_platform" =~ (x86_64|amd64|universal2) ]]; then
                     arch_matches=true
                   fi
                   ;;
                 aarch64|arm64)
-                  if [[ "$wheel_platform" =~ (aarch64|arm64) ]]; then
+                  # Match aarch64, arm64, or universal2 (macOS universal binaries work on both archs)
+                  if [[ "$wheel_platform" =~ (aarch64|arm64|universal2) ]]; then
                     arch_matches=true
                   fi
                   ;;
