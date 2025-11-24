@@ -1,0 +1,196 @@
+name: 'Validate Audit File'
+description: 'Validates AI-assisted work audit log format and completeness'
+author: 'WAMP Project'
+
+inputs:
+  audit-file-path:
+    description: 'Path to the audit file (e.g., .audit/WORK.md)'
+    required: false
+    default: '.audit/WORK.md'
+
+  require-human-review:
+    description: 'Require all entries to have human review status'
+    required: false
+    default: 'false'
+
+  fail-on-pending:
+    description: 'Fail if any entries are marked as "Pending" review'
+    required: false
+    default: 'false'
+
+outputs:
+  valid:
+    description: 'Whether the audit file is valid (true/false)'
+    value: ${{ steps.validate.outputs.valid }}
+
+  entries-count:
+    description: 'Number of audit entries found'
+    value: ${{ steps.validate.outputs.entries_count }}
+
+  pending-count:
+    description: 'Number of entries pending human review'
+    value: ${{ steps.validate.outputs.pending_count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if audit file exists
+      id: check-file
+      shell: bash
+      run: |
+        if [ -f "${{ inputs.audit-file-path }}" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "✅ Audit file found: ${{ inputs.audit-file-path }}"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "⚠️  Audit file not found: ${{ inputs.audit-file-path }}"
+          echo "   This is acceptable for repositories without AI-assisted work."
+        fi
+
+    - name: Validate audit file structure
+      id: validate
+      if: steps.check-file.outputs.exists == 'true'
+      shell: bash
+      run: |
+        AUDIT_FILE="${{ inputs.audit-file-path }}"
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Validating Audit File: $AUDIT_FILE"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+
+        # Initialize counters
+        ENTRIES=0
+        PENDING=0
+        APPROVED=0
+        CHANGES_REQUESTED=0
+        ERRORS=0
+
+        # Check for required sections
+        if ! grep -q "# AI-Assisted Work Audit Log" "$AUDIT_FILE"; then
+          echo "❌ ERROR: Missing main heading '# AI-Assisted Work Audit Log'"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        if ! grep -q "## Purpose" "$AUDIT_FILE"; then
+          echo "⚠️  WARNING: Missing '## Purpose' section"
+        fi
+
+        if ! grep -q "## Audit Entries" "$AUDIT_FILE"; then
+          echo "❌ ERROR: Missing '## Audit Entries' section"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # Count audit entries (entries start with ### and YYYY-MM-DD pattern)
+        ENTRIES=$(grep -c "^### [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}:" "$AUDIT_FILE" || echo "0")
+
+        echo "📊 Found $ENTRIES audit entries"
+
+        if [ "$ENTRIES" -gt 0 ]; then
+          # Extract all entry blocks and validate each
+          awk '/^### [0-9]{4}-[0-9]{2}-[0-9]{2}:/{flag=1; entry=""} flag{entry=entry $0 "\n"} /^---$/{if(flag){print entry; flag=0}}' "$AUDIT_FILE" > /tmp/entries.txt
+
+          ENTRY_NUM=0
+          while IFS= read -r -d '---' ENTRY; do
+            if [ -n "$ENTRY" ]; then
+              ENTRY_NUM=$((ENTRY_NUM + 1))
+              echo ""
+              echo "Validating Entry #$ENTRY_NUM..."
+
+              # Check for required fields
+              if ! echo "$ENTRY" | grep -q "**AI Assistant**:"; then
+                echo "  ❌ Missing: AI Assistant field"
+                ERRORS=$((ERRORS + 1))
+              fi
+
+              if ! echo "$ENTRY" | grep -q "**Scope of Work**:"; then
+                echo "  ❌ Missing: Scope of Work field"
+                ERRORS=$((ERRORS + 1))
+              fi
+
+              if ! echo "$ENTRY" | grep -q "**Files Modified**:"; then
+                echo "  ❌ Missing: Files Modified field"
+                ERRORS=$((ERRORS + 1))
+              fi
+
+              if ! echo "$ENTRY" | grep -q "**Testing**:"; then
+                echo "  ❌ Missing: Testing field"
+                ERRORS=$((ERRORS + 1))
+              fi
+
+              if ! echo "$ENTRY" | grep -q "**Human Review**:"; then
+                echo "  ❌ Missing: Human Review field"
+                ERRORS=$((ERRORS + 1))
+              fi
+
+              # Check review status
+              if echo "$ENTRY" | grep -q "**Status**: Pending"; then
+                PENDING=$((PENDING + 1))
+                echo "  ⏳ Status: Pending review"
+              elif echo "$ENTRY" | grep -q "**Status**: Approved"; then
+                APPROVED=$((APPROVED + 1))
+                echo "  ✅ Status: Approved"
+              elif echo "$ENTRY" | grep -q "**Status**: Changes Requested"; then
+                CHANGES_REQUESTED=$((CHANGES_REQUESTED + 1))
+                echo "  🔄 Status: Changes Requested"
+              else
+                echo "  ⚠️  WARNING: Unknown or missing review status"
+              fi
+            fi
+          done < /tmp/entries.txt
+        fi
+
+        # Summary
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Validation Summary"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Total Entries:        $ENTRIES"
+        echo "Pending Review:       $PENDING"
+        echo "Approved:             $APPROVED"
+        echo "Changes Requested:    $CHANGES_REQUESTED"
+        echo "Errors Found:         $ERRORS"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+
+        # Set outputs
+        echo "entries_count=$ENTRIES" >> $GITHUB_OUTPUT
+        echo "pending_count=$PENDING" >> $GITHUB_OUTPUT
+
+        # Determine if valid
+        VALID="true"
+
+        if [ "$ERRORS" -gt 0 ]; then
+          echo "❌ Validation FAILED: $ERRORS error(s) found"
+          VALID="false"
+        fi
+
+        if [ "${{ inputs.require-human-review }}" = "true" ] && [ "$ENTRIES" -gt 0 ] && [ "$PENDING" -gt 0 ]; then
+          echo "⚠️  WARNING: $PENDING entries require human review"
+        fi
+
+        if [ "${{ inputs.fail-on-pending }}" = "true" ] && [ "$PENDING" -gt 0 ]; then
+          echo "❌ Validation FAILED: $PENDING entries pending human review"
+          VALID="false"
+        fi
+
+        echo "valid=$VALID" >> $GITHUB_OUTPUT
+
+        if [ "$VALID" = "false" ]; then
+          exit 1
+        else
+          echo "✅ Audit file validation PASSED"
+        fi
+
+    - name: Skip validation
+      if: steps.check-file.outputs.exists != 'true'
+      shell: bash
+      run: |
+        echo "entries_count=0" >> $GITHUB_OUTPUT
+        echo "pending_count=0" >> $GITHUB_OUTPUT
+        echo "valid=true" >> $GITHUB_OUTPUT
+        echo "ℹ️  No audit file to validate (this is acceptable)"
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
