@@ -36,3 +36,22 @@ update-repo-submodule:
 
     git submodule update --remote --merge
     echo "✅ Workspace AI submodule updated. Now add & commit the change (to `.cicd`) in this repository."
+
+# Deploy GitHub templates from `.cicd/templates/` to target repository `.github/` directory (should be run from `.cicd` dir in target repository).
+deploy-github-templates:
+    #!/usr/bin/env bash
+    set -e
+
+    # Create .github directories if they don't exist
+    mkdir -p ../.github/ISSUE_TEMPLATE
+    mkdir -p ../.github/PULL_REQUEST_TEMPLATE
+
+    # Copy Issue templates
+    cp -v templates/ISSUE_TEMPLATE/*.md ../.github/ISSUE_TEMPLATE/
+    cp -v templates/ISSUE_TEMPLATE/*.yml ../.github/ISSUE_TEMPLATE/
+
+    # Copy PR template
+    cp -v templates/PULL_REQUEST_TEMPLATE/*.md ../.github/PULL_REQUEST_TEMPLATE/
+
+    echo "✅ GitHub templates deployed to ../.github/"
+    echo "   Now add & commit the templates in the target repository."
