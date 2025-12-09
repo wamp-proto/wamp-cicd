@@ -145,6 +145,10 @@ runs:
         path: ${{ inputs.path }}
         retention-days: ${{ inputs.retention-days }}
         if-no-files-found: ${{ inputs.if-no-files-found }}
+        # REQUIRED: actions/upload-artifact@v4.4+ excludes hidden files by default.
+        # Without this, directories like .audit/ or files like .gitignore are silently
+        # excluded, causing "No files were found" errors even when files exist.
+        include-hidden-files: true
 
     - name: Confirm upload completion
       shell: bash
