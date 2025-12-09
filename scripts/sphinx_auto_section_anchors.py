@@ -84,7 +84,6 @@ class AutoSectionAnchorTransform(SphinxTransform):
         return set(getattr(self.document, "ids", {}).keys())
 
     def apply(self) -> None:  # type: ignore[override]
-        env = self.app.env
         cfg_enabled = getattr(self.app.config, "auto_section_anchor_enabled", True)
         if not cfg_enabled:
             return
