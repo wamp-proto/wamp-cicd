@@ -383,14 +383,15 @@ runs:
             mkdir -p "$DOWNLOAD_PATH"
 
             # Handle overwrite mode for final destination
+            # Use -r for recursive copy (artifacts may contain directories)
             if [ "$OVERWRITE" = "true" ]; then
               echo "Overwrite mode: enabled (will replace existing files)"
-              # Copy with overwrite (cp -f)
-              cp -f "$STAGING_DIR"/* "$DOWNLOAD_PATH/" 2>/dev/null || true
+              # Copy recursively with overwrite (cp -rf)
+              cp -rf "$STAGING_DIR"/* "$DOWNLOAD_PATH/" 2>/dev/null || true
             else
               echo "Overwrite mode: disabled (will skip existing files)"
-              # Copy without overwrite (cp -n)
-              cp -n "$STAGING_DIR"/* "$DOWNLOAD_PATH/" 2>/dev/null || true
+              # Copy recursively without overwrite (cp -rn)
+              cp -rn "$STAGING_DIR"/* "$DOWNLOAD_PATH/" 2>/dev/null || true
             fi
 
             echo "✅ Files moved to final destination"
