@@ -89,14 +89,20 @@ echo "    Audit/MD:   ${AUDIT_COUNT}"
 if [ -f "CHECKSUMS.sha256" ]; then
     echo ""
     echo "==> Verifying checksums..."
-    EXPECTED=$(grep -c "SHA256" CHECKSUMS.sha256 || echo "0")
+    # Count lines that look like checksums (SHA256 or SHA2-256 format)
+    EXPECTED=$(grep -cE "^SHA2?-?256\(" CHECKSUMS.sha256 || echo "0")
     echo "    Files to verify: ${EXPECTED}"
 
     VERIFIED=0
     FAILED=0
+    SKIPPED=0
     while IFS= read -r line; do
+        # Skip empty lines
+        [ -z "$line" ] && continue
+
         # Parse: SHA256(filename)= checksum  or  SHA2-256(filename)= checksum
-        FILE_PATH=$(echo "$line" | sed 's/SHA\(2-\)\?256(\(.*\))=.*/\2/')
+        # Extract filename between parentheses
+        FILE_PATH=$(echo "$line" | sed -E 's/^SHA2?-?256\(([^)]+)\)=.*/\1/')
         EXPECTED_CHECKSUM=$(echo "$line" | awk -F'= ' '{print $2}')
 
         # Handle ./prefix
@@ -108,8 +114,13 @@ if [ -f "CHECKSUMS.sha256" ]; then
                 VERIFIED=$((VERIFIED + 1))
             else
                 echo "    MISMATCH: $FILE_PATH"
+                echo "      Expected: $EXPECTED_CHECKSUM"
+                echo "      Actual:   $ACTUAL_CHECKSUM"
                 FAILED=$((FAILED + 1))
             fi
+        else
+            # File not in this directory (might be in sub-checksum file)
+            SKIPPED=$((SKIPPED + 1))
         fi
     done < CHECKSUMS.sha256
 
@@ -118,6 +129,9 @@ if [ -f "CHECKSUMS.sha256" ]; then
         exit 1
     else
         echo "    OK: ${VERIFIED} file(s) verified successfully"
+        if [ $SKIPPED -gt 0 ]; then
+            echo "    (${SKIPPED} files skipped - referenced in sub-checksum files)"
+        fi
     fi
 fi
 

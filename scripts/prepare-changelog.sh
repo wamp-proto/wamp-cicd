@@ -24,9 +24,18 @@ echo "Repository: ${REPO}"
 echo ""
 
 # Find the previous version in changelog.rst
-PREV_VERSION=$(grep -E "^[0-9]+\.[0-9]+\.[0-9]+$" docs/changelog.rst 2>/dev/null | head -1 || echo "")
+# Skip the version we're releasing (if it's already in changelog) and find the one before it
+ALL_VERSIONS=$(grep -E "^[0-9]+\.[0-9]+\.[0-9]+$" docs/changelog.rst 2>/dev/null || echo "")
+PREV_VERSION=""
+for v in ${ALL_VERSIONS}; do
+    if [ "$v" != "${VERSION}" ]; then
+        PREV_VERSION="$v"
+        break
+    fi
+done
+
 if [ -z "${PREV_VERSION}" ]; then
-    echo "Warning: No previous version found in changelog.rst"
+    echo "Warning: No previous version found in changelog.rst (other than ${VERSION})"
     PREV_TAG=""
 else
     echo "Previous version in changelog: ${PREV_VERSION}"
