@@ -90,25 +90,54 @@ runs:
           EFFECTIVE_RUN_ID="${RUN_ID:-$GITHUB_RUN_ID}"
           echo "Using run ID: $EFFECTIVE_RUN_ID"
 
-          # Get artifact ID by name
-          echo "Looking up artifact ID for: $ARTIFACT_NAME"
+          # Get artifact by name - supports both exact match and prefix match
+          # The upload-artifact-verified action appends a meta-checksum suffix to artifact names
+          # (e.g., "my-artifact" becomes "my-artifact-abc123..."), so we need to find artifacts
+          # that start with the requested base name.
+          echo "Looking up artifact: $ARTIFACT_NAME"
+
+          # First try exact match
           ARTIFACT_JSON=$(gh api \
             "/repos/$GITHUB_REPOSITORY/actions/runs/$EFFECTIVE_RUN_ID/artifacts" \
-            --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\")" 2>&1)
+            --jq ".artifacts[] | select(.name == \"$ARTIFACT_NAME\")" 2>&1 || echo "")
 
           if [ -z "$ARTIFACT_JSON" ]; then
-            echo "❌ Artifact not found: $ARTIFACT_NAME"
-            if [ $attempt -lt $MAX_ATTEMPTS ]; then
-              echo "⏳ Retrying in ${RETRY_DELAY}s..."
-              sleep "$RETRY_DELAY"
-              continue
-            else
-              echo "❌ Max retry attempts reached"
-              exit 1
+            # No exact match - try prefix match (for artifacts with meta-checksum suffix)
+            echo "No exact match, trying prefix match for: ${ARTIFACT_NAME}-"
+            ARTIFACT_JSON=$(gh api \
+              "/repos/$GITHUB_REPOSITORY/actions/runs/$EFFECTIVE_RUN_ID/artifacts" \
+              --jq ".artifacts[] | select(.name | startswith(\"${ARTIFACT_NAME}-\"))" 2>&1 || echo "")
+
+            if [ -z "$ARTIFACT_JSON" ]; then
+              echo "❌ Artifact not found: $ARTIFACT_NAME (tried exact and prefix match)"
+              # List available artifacts for debugging
+              echo ""
+              echo "Available artifacts in run $EFFECTIVE_RUN_ID:"
+              gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$EFFECTIVE_RUN_ID/artifacts" \
+                --jq '.artifacts[].name' 2>&1 | head -20 || echo "(failed to list)"
+              echo ""
+              if [ $attempt -lt $MAX_ATTEMPTS ]; then
+                echo "⏳ Retrying in ${RETRY_DELAY}s..."
+                sleep "$RETRY_DELAY"
+                continue
+              else
+                echo "❌ Max retry attempts reached"
+                exit 1
+              fi
             fi
           fi
 
+          # Handle case where multiple artifacts match the prefix (shouldn't happen, but be safe)
+          MATCH_COUNT=$(echo "$ARTIFACT_JSON" | jq -s 'length')
+          if [ "$MATCH_COUNT" -gt 1 ]; then
+            echo "⚠️  Multiple artifacts match prefix '$ARTIFACT_NAME-', using most recent"
+            # Sort by created_at descending and take the first one
+            ARTIFACT_JSON=$(echo "$ARTIFACT_JSON" | jq -s 'sort_by(.created_at) | reverse | .[0]')
+          fi
+
           ARTIFACT_ID=$(echo "$ARTIFACT_JSON" | jq -r '.id')
+          ACTUAL_ARTIFACT_NAME=$(echo "$ARTIFACT_JSON" | jq -r '.name')
+
           if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
             echo "❌ Failed to parse artifact ID"
             if [ $attempt -lt $MAX_ATTEMPTS ]; then
@@ -121,7 +150,10 @@ runs:
             fi
           fi
 
-          echo "Found artifact ID: $ARTIFACT_ID"
+          echo "Found artifact: $ACTUAL_ARTIFACT_NAME (ID: $ARTIFACT_ID)"
+
+          # Update ARTIFACT_NAME to the actual name for later self-verification
+          ARTIFACT_NAME="$ACTUAL_ARTIFACT_NAME"
 
           # Create destination directory
           mkdir -p "$DOWNLOAD_PATH"
