@@ -68,6 +68,22 @@ runs:
         echo "Retry delay: ${RETRY_DELAY}s"
         echo ""
 
+        # Create a unique staging directory for this download
+        # This isolates the download/verify process from the final destination,
+        # preventing retry cleanup from wiping files from OTHER successful downloads
+        # when multiple artifacts are downloaded to the same destination directory.
+        STAGING_DIR=$(mktemp -d)
+        echo "Staging directory: $STAGING_DIR"
+        echo ""
+
+        # Ensure staging directory is cleaned up on exit (success or failure)
+        cleanup_staging() {
+          if [ -d "$STAGING_DIR" ]; then
+            rm -rf "$STAGING_DIR"
+          fi
+        }
+        trap cleanup_staging EXIT
+
         # Main retry loop
         for attempt in $(seq 1 $MAX_ATTEMPTS); do
           echo "────────────────────────────────────────────────────────────────────"
@@ -75,11 +91,11 @@ runs:
           echo "────────────────────────────────────────────────────────────────────"
           echo ""
 
-          # Clean destination on retry
+          # Clean STAGING directory on retry (NOT the final destination!)
+          # This is safe because staging only contains files from THIS download attempt
           if [ $attempt -gt 1 ]; then
-            echo "Cleaning destination from previous failed attempt..."
-            rm -rf "${DOWNLOAD_PATH:?}"/*
-            mkdir -p "$DOWNLOAD_PATH"
+            echo "Cleaning staging directory from previous failed attempt..."
+            rm -rf "${STAGING_DIR:?}"/*
             echo ""
           fi
 
@@ -155,12 +171,9 @@ runs:
           # Update ARTIFACT_NAME to the actual name for later self-verification
           ARTIFACT_NAME="$ACTUAL_ARTIFACT_NAME"
 
-          # Create destination directory
-          mkdir -p "$DOWNLOAD_PATH"
-
-          # Download the artifact zip
-          echo "Downloading artifact zip..."
-          if ! gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$DOWNLOAD_PATH/artifact.zip" 2>&1; then
+          # Download the artifact zip to STAGING directory (not final destination yet)
+          echo "Downloading artifact zip to staging..."
+          if ! gh api "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$STAGING_DIR/artifact.zip" 2>&1; then
             echo "❌ Download failed"
             if [ $attempt -lt $MAX_ATTEMPTS ]; then
               echo "⏳ Retrying in ${RETRY_DELAY}s..."
@@ -172,22 +185,13 @@ runs:
             fi
           fi
 
-          # Unzip to destination
-          echo "Extracting artifact..."
+          # Unzip to STAGING directory (verification happens here before moving to final destination)
+          echo "Extracting artifact to staging..."
 
-          # Build unzip command with optional overwrite flag
-          UNZIP_FLAGS="-q"
-          if [ "$OVERWRITE" = "true" ]; then
-            UNZIP_FLAGS="$UNZIP_FLAGS -o"
-            echo "Overwrite mode: enabled (will replace existing files)"
-          else
-            UNZIP_FLAGS="$UNZIP_FLAGS -n"
-            echo "Overwrite mode: disabled (will fail if files exist)"
-          fi
-
-          if ! unzip $UNZIP_FLAGS "$DOWNLOAD_PATH/artifact.zip" -d "$DOWNLOAD_PATH" 2>&1; then
+          # In staging, always use overwrite mode (-o) since we clean staging on retry
+          if ! unzip -q -o "$STAGING_DIR/artifact.zip" -d "$STAGING_DIR" 2>&1; then
             echo "❌ Extraction failed"
-            rm -f "$DOWNLOAD_PATH/artifact.zip"
+            rm -f "$STAGING_DIR/artifact.zip"
             if [ $attempt -lt $MAX_ATTEMPTS ]; then
               echo "⏳ Retrying in ${RETRY_DELAY}s..."
               sleep "$RETRY_DELAY"
@@ -199,9 +203,9 @@ runs:
           fi
 
           # Clean up zip file
-          rm -f "$DOWNLOAD_PATH/artifact.zip"
+          rm -f "$STAGING_DIR/artifact.zip"
 
-          echo "✅ Download completed"
+          echo "✅ Download completed to staging"
           echo ""
 
           # Sync filesystem after download
@@ -210,8 +214,8 @@ runs:
           echo "✅ Filesystem synced"
           echo ""
 
-          # Change to download path
-          cd "$DOWNLOAD_PATH"
+          # Change to STAGING directory for verification
+          cd "$STAGING_DIR"
 
           # Normalize line endings to Unix format (defense in depth)
           # ZIP extraction or text file auto-conversion could introduce CRLF
@@ -370,8 +374,26 @@ runs:
 
           if [ $HAS_ERRORS -eq 0 ]; then
             echo "┌────────────────────────────────────────────────────────────────┐"
-            echo "│ ✅ SUCCESS - All files verified                                │"
+            echo "│ ✅ SUCCESS - All files verified in staging                     │"
             echo "└────────────────────────────────────────────────────────────────┘"
+            echo ""
+
+            # Now move verified files from staging to final destination
+            echo "Moving verified files to final destination: $DOWNLOAD_PATH"
+            mkdir -p "$DOWNLOAD_PATH"
+
+            # Handle overwrite mode for final destination
+            if [ "$OVERWRITE" = "true" ]; then
+              echo "Overwrite mode: enabled (will replace existing files)"
+              # Copy with overwrite (cp -f)
+              cp -f "$STAGING_DIR"/* "$DOWNLOAD_PATH/" 2>/dev/null || true
+            else
+              echo "Overwrite mode: disabled (will skip existing files)"
+              # Copy without overwrite (cp -n)
+              cp -n "$STAGING_DIR"/* "$DOWNLOAD_PATH/" 2>/dev/null || true
+            fi
+
+            echo "✅ Files moved to final destination"
             echo ""
 
             # Output for GitHub Actions
