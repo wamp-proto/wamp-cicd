@@ -101,9 +101,9 @@ EOF
                 echo "     - Cases" >> "${OUTPUT_FILE}"
                 echo "     - Status" >> "${OUTPUT_FILE}"
 
-                # Extract table rows using awk - get lines between "Client Conformance" and next "##" or "---"
-                awk "/Client Conformance \(${nvx_config}\)/,/^(##|---)/" "${WSTEST_SUMMARY}" | \
-                    grep "^|" | grep -v "^| *Testee" | grep -v "^|.*---" | \
+                # Extract table rows using sed - get lines between headings, then filter for table data
+                sed -n "/Client Conformance (${nvx_config})/,/## /p" "${WSTEST_SUMMARY}" | \
+                    grep "^|" | grep -v "^| *Testee" | grep -v "^|[-]*|" | \
                     while IFS='|' read -r _ testee cases status _; do
                         testee=$(echo "$testee" | xargs)
                         cases=$(echo "$cases" | xargs)
@@ -129,9 +129,9 @@ EOF
                 echo "     - Cases" >> "${OUTPUT_FILE}"
                 echo "     - Status" >> "${OUTPUT_FILE}"
 
-                # Extract table rows
-                awk "/Server Conformance \(${nvx_config}\)/,/^(##|---)/" "${WSTEST_SUMMARY}" | \
-                    grep "^|" | grep -v "^| *Testee" | grep -v "^|.*---" | \
+                # Extract table rows - for server, go until next ## or ---
+                sed -n "/Server Conformance (${nvx_config})/,/\(## \|^---\)/p" "${WSTEST_SUMMARY}" | \
+                    grep "^|" | grep -v "^| *Testee" | grep -v "^|[-]*|" | \
                     while IFS='|' read -r _ testee cases status _; do
                         testee=$(echo "$testee" | xargs)
                         cases=$(echo "$cases" | xargs)
