@@ -10,80 +10,67 @@ templates/
 │   ├── bug_report.md          # Bug report template
 │   ├── feature_request.md     # Feature request template
 │   └── config.yml             # Issue template configuration
-├── PULL_REQUEST_TEMPLATE/
-│   └── pull_request_template.md  # PR template
+├── pull_request_template.md   # PR template (auto-populated)
 └── README.md                  # This file
 ```
 
+## GitHub Template Behavior
+
+**Important**: GitHub has specific rules for how templates are loaded:
+
+### Pull Request Templates
+
+| Location | Behavior |
+|----------|----------|
+| `.github/pull_request_template.md` | **Auto-populated** when opening a new PR |
+| `.github/PULL_REQUEST_TEMPLATE/` directory | Multiple templates, requires manual URL selection |
+
+**Recommendation**: Use `.github/pull_request_template.md` for a single default template that auto-populates. The `PULL_REQUEST_TEMPLATE/` directory approach is only useful when you need multiple different PR templates that users select manually.
+
+### Issue Templates
+
+| Location | Behavior |
+|----------|----------|
+| `.github/ISSUE_TEMPLATE/` directory | Multiple templates shown in issue creation UI |
+| `.github/ISSUE_TEMPLATE/config.yml` | Controls blank issues and adds external links |
+
+Issue templates work differently - the directory approach with multiple `.md` files is the standard way to offer template choices.
+
 ## Usage
 
-### For New Repositories
+### Quick Deploy (Recommended)
 
-When setting up a new WAMP repository:
+From a repository that has `wamp-cicd` as a `.cicd` submodule:
+
+```bash
+cd .cicd
+just deploy-github-templates
+```
+
+This copies all templates to the correct locations in `.github/`.
+
+### Manual Setup
 
 1. **Copy templates to `.github/` directory**:
    ```bash
    # From project root
-   mkdir -p .github
-   cp -r path/to/wamp-cicd/templates/ISSUE_TEMPLATE .github/
-   cp -r path/to/wamp-cicd/templates/PULL_REQUEST_TEMPLATE .github/
+   mkdir -p .github/ISSUE_TEMPLATE
+
+   # Copy issue templates
+   cp path/to/wamp-cicd/templates/ISSUE_TEMPLATE/* .github/ISSUE_TEMPLATE/
+
+   # Copy PR template (must be at .github/ root, NOT in subdirectory!)
+   cp path/to/wamp-cicd/templates/pull_request_template.md .github/
    ```
 
 2. **Customize if needed**:
    - Update URLs in `config.yml` to point to correct repo
    - Adjust checklists for project-specific requirements
-   - Add project-specific sections if needed
 
 3. **Commit templates**:
    ```bash
-   git add .github/ISSUE_TEMPLATE .github/PULL_REQUEST_TEMPLATE
-   git commit -m "Add GitHub Issue and PR templates from wamp-cicd"
-   ```
-
-### For Existing Repositories
-
-1. **Review current templates**:
-   ```bash
-   ls -la .github/ISSUE_TEMPLATE/
-   ls -la .github/PULL_REQUEST_TEMPLATE/
-   ```
-
-2. **Backup existing templates** (if any):
-   ```bash
-   mv .github/ISSUE_TEMPLATE .github/ISSUE_TEMPLATE.bak
-   mv .github/PULL_REQUEST_TEMPLATE .github/PULL_REQUEST_TEMPLATE.bak
-   ```
-
-3. **Copy new templates and customize** (as above)
-
-4. **Test templates**:
-   - Create a new issue and verify templates appear
-   - Create a new PR and verify template loads
-   - Adjust URLs and project-specific content
-
-### Updating Templates Across Repositories
-
-When templates are updated in `wamp-cicd`:
-
-1. **Review changes**:
-   ```bash
-   cd path/to/wamp-cicd
-   git log -p templates/
-   ```
-
-2. **Copy updated templates to each repo**:
-   ```bash
-   # For each WAMP repository
-   cd path/to/project
-   cp -r path/to/wamp-cicd/templates/ISSUE_TEMPLATE .github/
-   cp -r path/to/wamp-cicd/templates/PULL_REQUEST_TEMPLATE .github/
-   ```
-
-3. **Review and commit**:
-   ```bash
-   git diff .github/
    git add .github/
-   git commit -m "Update GitHub templates from wamp-cicd"
+   git commit -m "Add GitHub Issue and PR templates from wamp-cicd"
    ```
 
 ## Template Features
@@ -101,7 +88,6 @@ When templates are updated in `wamp-cicd`:
 - Use cases and examples
 - Alternatives considered
 - Impact assessment (breaking changes, affected components)
-- Complexity estimation
 
 ### PR Template
 
@@ -153,13 +139,13 @@ While these templates are designed to be reusable, some repos may need customiza
 - ❌ Cannot symlink templates from `wamp-cicd` submodule
 - ❌ GitHub ignores `.github/` content in submodules
 - ✅ Must copy templates into each repository's `.github/` directory
-- ✅ Can automate copying via scripts or workflows
+- ✅ Can automate copying via `just deploy-github-templates`
 
 ## Maintenance
 
 - Templates are maintained in `wamp-cicd` repository
-- Updates should be made here and then copied to dependent repos
-- Consider creating a script/workflow to automate template synchronization
+- Updates should be made here and then deployed to dependent repos
+- Use `just deploy-github-templates` to sync templates
 
 ## References
 

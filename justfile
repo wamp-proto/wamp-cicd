@@ -44,14 +44,23 @@ deploy-github-templates:
 
     # Create .github directories if they don't exist
     mkdir -p ../.github/ISSUE_TEMPLATE
-    mkdir -p ../.github/PULL_REQUEST_TEMPLATE
 
     # Copy Issue templates
     cp -v templates/ISSUE_TEMPLATE/*.md ../.github/ISSUE_TEMPLATE/
     cp -v templates/ISSUE_TEMPLATE/*.yml ../.github/ISSUE_TEMPLATE/
 
-    # Copy PR template
-    cp -v templates/PULL_REQUEST_TEMPLATE/*.md ../.github/PULL_REQUEST_TEMPLATE/
+    # Copy PR template to .github/ root (NOT subdirectory!)
+    # GitHub only auto-populates PR template when it's at .github/pull_request_template.md
+    # The PULL_REQUEST_TEMPLATE/ directory approach requires manual URL selection
+    cp -v templates/pull_request_template.md ../.github/
+
+    # Remove old PULL_REQUEST_TEMPLATE directory if it exists (no longer needed)
+    if [ -d "../.github/PULL_REQUEST_TEMPLATE" ]; then
+        echo "   Removing obsolete ../.github/PULL_REQUEST_TEMPLATE/ directory"
+        rm -rf ../.github/PULL_REQUEST_TEMPLATE
+    fi
 
     echo "✅ GitHub templates deployed to ../.github/"
+    echo "   - Issue templates: ../.github/ISSUE_TEMPLATE/"
+    echo "   - PR template: ../.github/pull_request_template.md"
     echo "   Now add & commit the templates in the target repository."
