@@ -39,6 +39,8 @@ Add this repo as a submodule to a WAMP related repo:
 ```console
 cd ~/scm/crossbario/autobahn-python
 git submodule add https://github.com/wamp-proto/wamp-cicd.git .cicd
+cd .cicd
+just deploy-github-templates
 ```
 
 Clone a WAMP related repo including submodules:
