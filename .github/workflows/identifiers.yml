@@ -168,10 +168,22 @@ jobs:
             exit 1
           fi
 
-          # Fail closed on any branch/ref name that violates the WAMP naming policy.
-          # validate_branch_name() is provided by the sourced sanitize.sh.
+          # Branch/ref name validation is defined INLINE here on purpose, NOT sourced
+          # from the consumer's .cicd submodule. The reusable workflow floats on @main
+          # while the .cicd submodule is pinned per consumer, so depending on a newly
+          # added submodule function would break every consumer still on an older pin
+          # (validate_branch_name: command not found, fail-closed). Keeping the logic
+          # inline makes this workflow self-contained and pin-independent. Only
+          # sanitize() is sourced, and that exists in every historical .cicd pin.
+          # See wamp-proto/wamp-cicd#9.
+          validate_branch_name() {
+            # Permissive, shell-safe and filesystem-safe allowlist. Returns 0 if valid.
+            local name="$1"
+            local re='^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$'
+            [[ "$name" =~ $re ]]
+          }
           require_valid_branch() {
-            # $1 = raw branch name, $2 = human-readable source label
+            # $1 = raw branch name, $2 = human-readable source label; fail closed.
             if ! validate_branch_name "$1"; then
               echo "::error::Branch name from $2 does not match the required policy" \
                    "^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}\$ (US-ASCII alphanumerics plus" \
