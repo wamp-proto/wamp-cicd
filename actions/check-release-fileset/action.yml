@@ -315,13 +315,18 @@ runs:
                 continue
               fi
 
-              # Match implementation and version
-              # CPython: cp311, cp312, etc.
+              # Match implementation and version.
+              # CPython: the python tag is cp<N> for BOTH GIL and free-threaded builds
+              #          (e.g. cp314); the GIL vs free-threaded distinction lives ONLY in
+              #          the ABI tag (cp314 vs cp314t), checked exactly just below.
               # PyPy: pp311, pp38, pypy311_pp73, etc.
 
               python_tag_matches=false
               if [ "$req_impl" = "cp" ]; then
-                if [[ "$wheel_python" =~ ^cp${req_version} ]]; then
+                # Strip a trailing 't' (free-threaded marker) before matching the python
+                # tag, since the python tag never carries it (the 't' is on the ABI tag).
+                req_version_num="${req_version%t}"
+                if [[ "$wheel_python" == "cp${req_version_num}" ]]; then
                   python_tag_matches=true
                 fi
               elif [ "$req_impl" = "pp" ]; then
@@ -332,6 +337,17 @@ runs:
 
               if [ "$python_tag_matches" = "false" ]; then
                 continue
+              fi
+
+              # For CPython, require an EXACT ABI-tag match so a free-threaded cp314t wheel
+              # never satisfies a GIL cp314 target (and vice-versa). Expected ABI tag is
+              # cp<version> -- cp314 (GIL) or cp314t (free-threaded) -- where req_version
+              # already carries the trailing 't' for free-threaded targets. This is distinct
+              # from the manylinux platform tag checked further below. (wamp-cicd #11)
+              if [ "$req_impl" = "cp" ]; then
+                if [[ "$wheel_abi" != "cp${req_version}" ]]; then
+                  continue
+                fi
               fi
 
               # Match platform
