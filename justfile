@@ -64,3 +64,9 @@ deploy-github-templates:
     echo "   - Issue templates: ../.github/ISSUE_TEMPLATE/"
     echo "   - PR template: ../.github/pull_request_template.md"
     echo "   Now add & commit the templates in the target repository."
+
+# Run the action unit tests (composite-action shell logic against crafted fixtures).
+test:
+    #!/usr/bin/env bash
+    set -e
+    bash tests/test-check-release-fileset.sh

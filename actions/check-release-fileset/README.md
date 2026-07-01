@@ -92,6 +92,12 @@ Newline or comma-separated list of required wheel targets and source distributio
   - `manylinux_2_34`: glibc 2.34+ (Debian 11+, Ubuntu 21.10+, RHEL 9+)
   - `manylinux_2_36`: glibc 2.36+ (Debian 12+, Ubuntu 22.10+)
 
+> **CPython GIL vs free-threaded:** for CPython the `version` selects the **ABI tag**, which
+> is matched *exactly*. `314` requires a GIL `cp314` wheel and `314t` requires a
+> free-threaded `cp314t` wheel — a `cp314t` wheel will **not** satisfy a `cpy314` target
+> (and vice-versa). The trailing `t` denotes the free-threaded ABI (`cp314t`); it is not
+> part of the Python tag (which is `cp314` in both cases).
+
 #### Special Keywords
 
 - `source` or `sdist`: Require source distribution (`.tar.gz`)
