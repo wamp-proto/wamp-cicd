@@ -81,6 +81,46 @@ run_case "win cp314 amd64" 0 "cpy314-win-amd64" \
 run_case "source required present" 0 "source" \
   "pkg-${V}.tar.gz"
 
+echo "== PyPI-clean fileset: keep-metadata=false strips non-distributions (#13) =="
+# With keep-metadata=false the directory must end up containing ONLY the target
+# wheels + sdist. Stray files (build-info.txt was the #13 leak that reached
+# twine, plus CHECKSUMS*/VALIDATION.txt) must be removed, and the run succeed.
+# clean_case <name> <targets> <dist-file>...
+clean_case() {
+  local name="$1" targets="$2"; shift 2
+  local dist="${WORK}/dist"
+  rm -rf "$dist"; mkdir -p "$dist"
+  local f
+  for f in "$@"; do : > "${dist}/${f}"; done
+  : > "${WORK}/gh_output"
+  local rc=0
+  env DISTDIR="$dist" TARGETS="$targets" MODE=strict \
+      ALLOW_DEV_WHEELS=false ALLOW_EXTRA_WHEELS=false KEEP_METADATA=false \
+      GITHUB_OUTPUT="${WORK}/gh_output" \
+      bash "$SCRIPT" > "${WORK}/log" 2>&1 || rc=$?
+  local stray
+  stray="$(cd "$dist" && ls -1 | grep -vE '\.(whl|tar\.gz)$' || true)"
+  if [ "$rc" = 0 ] && [ -z "$stray" ]; then
+    echo "  ok   [$name] exit=$rc, only distributions remain"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL [$name] exit=$rc; stray files: ${stray:-none}"
+    tail -8 "${WORK}/log" | sed 's/^/         /'
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+clean_case "strips build-info.txt/CHECKSUMS/VALIDATION, keeps dists" \
+  "cpy311-linux-x86_64-manylinux_2_28
+source" \
+  "pkg-${V}-cp311-cp311-manylinux_2_28_x86_64.whl" \
+  "pkg-${V}.tar.gz" \
+  "build-info.txt" \
+  "CHECKSUMS-ALL.sha256" \
+  "CHECKSUMS.sha256" \
+  "CHECKSUMS.sha256.meta" \
+  "VALIDATION.txt"
+
 echo ""
 echo "TOTAL: pass=${PASS} fail=${FAIL}"
 [ "$FAIL" = 0 ]

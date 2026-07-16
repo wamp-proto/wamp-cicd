@@ -459,15 +459,24 @@ runs:
 
         # Remove metadata files (unless keep-metadata is true)
         if [ "$KEEP_METADATA" = "false" ]; then
-          echo "==> Checking for metadata files to remove..."
+          echo "==> Enforcing PyPI-clean fileset (only *.whl + *.tar.gz kept)..."
           echo ""
-          for pattern in "CHECKSUMS*.sha256" "CHECKSUMS*.meta" "VALIDATION.txt" "*.sig" "*.asc"; do
-            for file in $pattern; do
-              if [ -f "$file" ]; then
-                echo "🗑️  $file (metadata, not for PyPI)"
+          # Allowlist, not denylist: a PyPI upload directory must contain ONLY
+          # distributions. Flag every non-wheel / non-sdist file for removal
+          # (CHECKSUMS*, VALIDATION.txt, build-info.txt, signatures, and anything
+          # future). A fixed denylist previously missed build-info.txt, which
+          # then reached twine via pypa/gh-action-pypi-publish (it uploads the
+          # whole packages-dir, no glob) and failed the publish. See issue #13.
+          for file in *; do
+            [ -f "$file" ] || continue
+            case "$file" in
+              *.whl|*.tar.gz)
+                : ;;   # keep distributions (extra/non-target wheels handled above)
+              *)
+                echo "🗑️  $file (non-distribution, not for PyPI)"
                 FILES_TO_REMOVE+=("$file")
-              fi
-            done
+                ;;
+            esac
           done
           echo ""
         else
