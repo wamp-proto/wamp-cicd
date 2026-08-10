@@ -478,6 +478,86 @@ check-workflow-just:
     [ "${drift}" -eq 0 ] || exit 1
     echo "--> ${found} sibling copy/copies checked, no drift."
 
+# What is left to do, from the forge (companion to `just where`).
+#
+# `where` answers "where am I in this workflow" and is deliberately OFFLINE - it
+# reads pins, never upstream heads, which is why it works on a machine with no
+# credentials. `what` answers "what is left" and cannot be offline: it asks
+# GitHub. So it degrades to a sentence rather than an error, because an
+# informational recipe that FAILS reads as a broken repository.
+#
+# The grouping is the point. A flat list of eighteen is why the question keeps
+# being asked; "eleven in this epic, six for later, one undecided" is an answer.
+# Milestones are what it groups by, so an issue with no milestone shows up as
+# exactly that - an issue nobody has decided about.
+#
+# The repository is DERIVED, never written down: this file is shared, and a
+# hard-coded name would be wrong in every repository but one. The canonical
+# remote is preferred over a fork, so the count is of the project's issues and
+# not of a fork's.
+#
+# Group this repository's open issues by milestone - what is left, and for when.
+what:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    slug=""
+    for remote in upstream origin $(git remote); do
+        url="$(git remote get-url "${remote}" 2>/dev/null)" || continue
+        case "${url}" in *github.com[:/]*) ;; *) continue ;; esac
+        slug="$(printf '%s' "${url}" | sed -E 's|.*github\.com[:/]||; s|\.git$||; s|/$||')"
+        [ -n "${slug}" ] && break
+    done
+
+    if [ -z "${slug}" ]; then
+        echo ""
+        echo "  no GitHub remote in this checkout, so there is nothing to ask."
+        echo "  \`just what\` runs on the machine that has the forge remotes and"
+        echo "  credentials; \`just where\` works everywhere and is the offline half."
+        echo ""
+        exit 0
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        echo ""
+        echo "  gh is not installed here, so ${slug} cannot be asked."
+        echo "  Same as above: this is the online half of the pair."
+        echo ""
+        exit 0
+    fi
+
+    # number, title and milestone in one call. `gh` exits non-zero when it is
+    # unauthenticated or offline, and that is reported rather than swallowed -
+    # an empty list and a failed call must not look the same.
+    rows="$(gh issue list --repo "${slug}" --state open --limit 200 \
+              --json number,title,milestone \
+              --jq '.[] | [(.milestone.title // "(no milestone)"), .number, .title] | @tsv' 2>&1)"
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo "  could not ask ${slug}:"
+        printf '    %s\n' "${rows}"
+        echo ""
+        exit 0
+    fi
+
+    echo ""
+    printf "  repository   %s\n" "${slug}"
+    if [ -z "${rows}" ]; then
+        printf "  open issues  0 - nothing is left, which is worth checking twice.\n\n"
+        exit 0
+    fi
+    printf "  open issues  %s\n" "$(printf '%s\n' "${rows}" | wc -l)"
+
+    # Milestones first, in name order, with "(no milestone)" LAST - it is the
+    # bucket to empty, and putting it at the end is where a reader stops.
+    printf '%s\n' "${rows}" | cut -f1 | sort -u | sort -k1,1 \
+        | awk '$0 == "(no milestone)" { last = $0; next } { print } END { if (last) print last }' \
+        | while IFS= read -r milestone; do
+        n="$(printf '%s\n' "${rows}" | awk -F'\t' -v m="${milestone}" '$1 == m' | wc -l)"
+        printf "\n  %-28s %s\n" "${milestone}" "${n}"
+        printf '%s\n' "${rows}" | awk -F'\t' -v m="${milestone}" '$1 == m { printf "    #%-4s %s\n", $2, $3 }'
+    done
+    echo ""
+
 # Commit directly on the integration branch, WITHOUT disabling any hook (#61).
 #
 # WHY THIS EXISTS
