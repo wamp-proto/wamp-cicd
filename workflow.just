@@ -185,6 +185,51 @@ _workflow-branch-behind branch:
 
     echo ${behind}
 
+# Print whether this repository can produce a merge signature the project's own
+# verification policy would accept (internal).
+#
+# Output is `ok|<identity>|<issuer>` or `no|<what is missing>`.
+#
+# WHY THIS IS A SEPARATE QUESTION FROM "IS THERE A SIGNATURE".
+# MERGE-AND-SIGNING-POLICY.md §4: the policy is not "this commit has some valid
+# signature", it is "this commit has a valid Sigstore signature whose
+# certificate identifies the expected maintainer through the expected OIDC
+# issuer". A forge-generated merge commit HAS a valid signature and is exactly
+# the object the policy exists to keep out, so anything that checks for mere
+# presence passes the one case it was written for.
+#
+# AND IT IS ASKED BEFORE IT IS NEEDED. `just where` prints it, so "gitsign is
+# not configured here" is learned while reading status rather than half way
+# through landing a branch. gitsign is configured PER REPOSITORY; a repository
+# without it falls through to the OpenPGP backend, where `git commit -S` fails
+# with "No secret key" - which reads like a broken key and is not.
+_workflow-signing-state:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    if ! command -v gitsign >/dev/null 2>&1; then
+        echo "no|gitsign is not installed"
+        exit 0
+    fi
+    if [ "$(git config --get gpg.format || true)" != "x509" ]; then
+        echo "no|gpg.format is not x509 (git config gpg.format x509)"
+        exit 0
+    fi
+    case "$(git config --get gpg.x509.program || true)" in
+        *gitsign*) : ;;
+        *) echo "no|gpg.x509.program is not gitsign (git config gpg.x509.program gitsign)"
+           exit 0 ;;
+    esac
+
+    identity="$(git config --get workflow.signingIdentity || true)"
+    if [ -z "${identity}" ]; then
+        echo "no|workflow.signingIdentity is unset - the expected certificate identity"
+        exit 0
+    fi
+    issuer="$(git config --get workflow.oidcIssuer || echo 'https://github.com/login/oauth')"
+
+    echo "ok|${identity}|${issuer}"
+
 # -----------------------------------------------------------------------------
 # -- where am I
 # -----------------------------------------------------------------------------
@@ -223,12 +268,20 @@ where:
     hooks_state="$(just --justfile "{{justfile()}}" _workflow-hooks-state)"
     subs_state="$(just --justfile "{{justfile()}}" _workflow-submodule-state)"
 
+    # Asked here so it is answered before it is needed, not during a merge.
+    sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
+    case "${sign_state}" in
+        ok\|*) signing="gitsign as $(echo "${sign_state}" | cut -d'|' -f2)" ;;
+        *)     signing="NOT CONFIGURED - $(echo "${sign_state}" | cut -d'|' -f2)" ;;
+    esac
+
     echo ""
     echo "  repository   ${repo}"
     echo "  branch       ${branch}"
     echo "  working tree ${tree}"
     echo "  hooks        ${hooks_state#*|}"
     echo "  submodules   ${subs_state#*|}"
+    echo "  signing      ${signing}"
     echo ""
 
     # Per remote, rather than assuming which remote means what. Remote names and
@@ -904,6 +957,201 @@ publish branch='':
 # -- finish a branch
 # -----------------------------------------------------------------------------
 
+# Make the merge that lands a reviewed branch, locally and signed (internal).
+#
+# MERGE-AND-SIGNING-POLICY.md, made executable. The forge decides that a pull
+# request is ready; THIS makes the merge commit that enters protected history,
+# so that history is attributable to the maintainer rather than to the forge.
+#
+# WHY IT IS NOT SIX COMMANDS IN A RUNBOOK. A merge, a signature, a verification
+# and three pushes, per landing, forever. Every clerical guard in this file
+# replaced a step that had been forgotten at least once, and this is the step
+# that decides what enters the branch everyone reads.
+#
+# Assumes the caller is ON the integration branch and current with the
+# authority - `land` does that immediately before calling this, and this
+# refuses if it is not true rather than trusting it.
+#
+# ORDER MATTERS. Each check below can only be answered once the one before it
+# has passed, and each refuses BEFORE anything is created:
+#
+#   1  on the integration branch, current with the authority
+#   2  the local branch is the same commit as the reviewed one - not ahead
+#   3  signing is configured, and for THIS repository
+#   4  the forge says the pull request is open and mergeable
+#   5  the merge itself, aborted cleanly if a hook refuses it
+#   6  the signature verifies against the expected identity AND issuer,
+#      BEFORE the object leaves this machine
+#   7  push to the authority first
+_workflow-merge-signed branch base_remote:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    branch="{{branch}}"
+    base_remote="{{base_remote}}"
+
+    # 1 --------------------------------------------------------------------
+    if [ "$(git symbolic-ref --short HEAD 2>/dev/null || echo '')" != "{{WORKFLOW_MAIN}}" ]; then
+        echo "REFUSING: not on {{WORKFLOW_MAIN}}; this makes a merge INTO it." >&2
+        exit 1
+    fi
+
+    # 2 --------------------------------------------------------------------
+    # _workflow-branch-behind proves the local branch is not BEHIND any copy.
+    # This is the other half, and it is the half that merges unreviewed work:
+    # a local branch AHEAD of the copy the pull request was opened against
+    # carries commits nobody has seen. The remedy is to publish and let the
+    # review see them, never to merge them quietly.
+    ahead=""
+    for remote in $(just --justfile "{{justfile()}}" _workflow-publish-remotes); do
+        git show-ref --verify --quiet "refs/remotes/${remote}/${branch}" || continue
+        if [ "$(git rev-parse "${remote}/${branch}")" != "$(git rev-parse "${branch}")" ]; then
+            ahead="${ahead} ${remote}"
+        fi
+    done
+    if [ -n "${ahead}" ]; then
+        echo "" >&2
+        echo "REFUSING: ${branch} differs from the copy on:${ahead}" >&2
+        echo "" >&2
+        echo "  Those are the copies a reviewer looked at. Merging a local tip" >&2
+        echo "  that differs from them lands commits nobody reviewed." >&2
+        echo "" >&2
+        echo "  Fix with:  just publish ${branch}" >&2
+        exit 1
+    fi
+
+    # 3 --------------------------------------------------------------------
+    sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
+    if [ "${sign_state%%|*}" != "ok" ]; then
+        echo "" >&2
+        echo "REFUSING: cannot sign a merge here - ${sign_state#*|}." >&2
+        echo "" >&2
+        echo "  An unsigned merge on {{WORKFLOW_MAIN}} is the object the policy" >&2
+        echo "  exists to keep out, so this refuses rather than making one." >&2
+        echo "  gitsign is configured PER REPOSITORY:" >&2
+        echo "" >&2
+        echo "    git config gpg.format x509" >&2
+        echo "    git config gpg.x509.program gitsign" >&2
+        echo "    git config commit.gpgsign true" >&2
+        echo "    git config workflow.signingIdentity <your-certificate-identity>" >&2
+        echo "" >&2
+        exit 1
+    fi
+    identity="$(echo "${sign_state}" | cut -d'|' -f2)"
+    issuer="$(echo "${sign_state}" | cut -d'|' -f3)"
+
+    # 4 --------------------------------------------------------------------
+    # WHERE THERE IS A FORGE, THE FORGE DECIDES READINESS. This recipe must not
+    # become a way around review - that is the whole reason the merge is allowed
+    # to happen locally at all.
+    #
+    # Where there is NO forge remote there is no pull request to consult, and
+    # this is skipped out loud rather than silently: inside an instance the
+    # exchange is the only remote by design.
+    #
+    # It checks OPEN and MERGEABLE, and refuses on CHANGES_REQUESTED. It does
+    # NOT require an approval: on a single-maintainer repository nothing ever
+    # carries one, and a check that cannot pass gets switched off.
+    pr_note="no forge remote - no pull request to consult"
+    if git remote -v | grep -q 'github\.com'; then
+        if ! command -v gh >/dev/null 2>&1; then
+            echo "REFUSING: this repository has a forge remote but gh is not" >&2
+            echo "  installed, so the pull request's state cannot be read." >&2
+            exit 1
+        fi
+        pr_json="$(gh pr view "${branch}" --json number,state,mergeable,reviewDecision 2>/dev/null || true)"
+        if [ -z "${pr_json}" ]; then
+            echo "" >&2
+            echo "REFUSING: no pull request found for ${branch}." >&2
+            echo "  The forge hosts the review; landing without one skips it." >&2
+            exit 1
+        fi
+        pr_number="$(echo "${pr_json}" | sed -n 's/.*"number":\([0-9]*\).*/\1/p')"
+        pr_state="$(echo "${pr_json}" | sed -n 's/.*"state":"\([A-Z]*\)".*/\1/p')"
+        pr_mergeable="$(echo "${pr_json}" | sed -n 's/.*"mergeable":"\([A-Z_]*\)".*/\1/p')"
+        pr_review="$(echo "${pr_json}" | sed -n 's/.*"reviewDecision":"\([A-Z_]*\)".*/\1/p')"
+
+        if [ "${pr_state}" != "OPEN" ]; then
+            echo "REFUSING: pull request #${pr_number} is ${pr_state}, not OPEN." >&2
+            exit 1
+        fi
+        if [ "${pr_mergeable}" = "CONFLICTING" ]; then
+            echo "REFUSING: pull request #${pr_number} is CONFLICTING." >&2
+            exit 1
+        fi
+        if [ "${pr_review}" = "CHANGES_REQUESTED" ]; then
+            echo "REFUSING: pull request #${pr_number} has changes requested." >&2
+            exit 1
+        fi
+        pr_note="pull request #${pr_number}, ${pr_state}, ${pr_mergeable}, review: ${pr_review:-none}"
+    fi
+    echo "--> ${pr_note}"
+
+    # 5 --------------------------------------------------------------------
+    # The subject carries the issue number the way every other commit here does,
+    # derived from the branch name rather than asked for - `new-branch` is what
+    # made the name, so the two cannot disagree.
+    subject="Merge branch '${branch}'"
+    case "${branch}" in
+        {{WORKFLOW_BRANCH_PREFIX}}*)
+            n="${branch#{{WORKFLOW_BRANCH_PREFIX}}}"
+            case "${n}" in
+                ''|*[!0-9]*) : ;;
+                *) subject="${subject} (#${n})" ;;
+            esac ;;
+    esac
+
+    before_merge="$(git rev-parse HEAD)"
+    # -S EXPLICITLY, not via commit.gpgsign. Whether a merge is signed must not
+    # depend on a config key that is easy to unset and invisible when it is:
+    # the policy is about this object, so this command asks for it.
+    echo "--> Merging ${branch} into {{WORKFLOW_MAIN}}, no fast-forward, signed"
+    if ! git merge --no-ff -S -m "${subject}
+
+    Merged on the control node and signed with the maintainer's Sigstore
+    identity, per MERGE-AND-SIGNING-POLICY.md - ${pr_note}." "${branch}"; then
+        # LEAVE NO HALF-MERGE. A commit-msg hook that refuses a commit on the
+        # integration branch stops the merge after the index has been written,
+        # and a working tree left mid-merge is worse than a refusal.
+        git merge --abort 2>/dev/null || true
+        echo "" >&2
+        echo "REFUSING: the merge did not complete; the tree has been restored." >&2
+        echo "  Read the output above - it names the cause. The two seen so far:" >&2
+        echo "" >&2
+        echo "  A HOOK REFUSED A COMMIT ON {{WORKFLOW_MAIN}}. Such a hook predates" >&2
+        echo "  this policy: it was written when nothing was supposed to be" >&2
+        echo "  committed there at all, and it cannot yet tell an ordinary commit" >&2
+        echo "  from a maintainer-signed merge. Do NOT disable hooks to get past" >&2
+        echo "  it - that is the remedy such hooks print, and taking it leaves" >&2
+        echo "  every other guard off too." >&2
+        echo "" >&2
+        echo "  SIGNING FAILED (\"gpg failed to sign the data\"). gitsign is" >&2
+        echo "  configured but could not produce a certificate - usually no" >&2
+        echo "  browser for the OIDC flow, or no network to Fulcio." >&2
+        exit 1
+    fi
+
+    # 6 --------------------------------------------------------------------
+    # BEFORE IT LEAVES THIS MACHINE. A merge that was made but not signed must
+    # not reach the protected branch, and the check costs one command.
+    echo "--> Verifying the merge signature"
+    if ! gitsign verify \
+            --certificate-identity="${identity}" \
+            --certificate-oidc-issuer="${issuer}" HEAD; then
+        git reset --hard "${before_merge}"
+        echo "" >&2
+        echo "REFUSING: the merge commit does not verify as ${identity}" >&2
+        echo "  via ${issuer}. The merge has been undone; nothing was pushed." >&2
+        exit 1
+    fi
+
+    # 7 --------------------------------------------------------------------
+    # The authority first, deliberately. Everything else in this file treats
+    # the authority's integration branch as the answer to "has this landed",
+    # so it is the copy that must exist before any other is told about it.
+    echo "--> Pushing {{WORKFLOW_MAIN}} to ${base_remote} (the authority)"
+    git push "${base_remote}" {{WORKFLOW_MAIN}}
+
 # Delete the current dev branch, but only once it has actually landed.
 #
 # THE GUARD THAT MATTERS: `git branch -d` accepts "merged into its own upstream
@@ -1011,25 +1259,44 @@ land branch='':
 
     head_sha="$(git rev-parse "${branch}")"
 
-    if ! git merge-base --is-ancestor "${head_sha}" "${base_remote}/{{WORKFLOW_MAIN}}"; then
-        echo "" >&2
-        echo "REFUSING: ${base_remote}/{{WORKFLOW_MAIN}} does not contain ${branch}." >&2
-        echo "" >&2
-        echo "  This work has NOT landed. Deleting it now would lose it from" >&2
-        echo "  every branch that anyone reads." >&2
-        echo "" >&2
-        echo "  Note that 'git branch -d' would ACCEPT this: it checks the" >&2
-        echo "  branch's own upstream, which a pushed branch always satisfies." >&2
-        echo "" >&2
-        echo "  Not yet on {{WORKFLOW_MAIN}}:" >&2
-        git log --oneline --no-decorate "${base_remote}/{{WORKFLOW_MAIN}}..${branch}" \
-            | sed 's/^/    /' >&2
-        exit 1
-    fi
+    # HAS THE MERGE ALREADY BEEN MADE? Two worlds, and this recipe serves both.
+    #
+    # Before MERGE-AND-SIGNING-POLICY.md the forge made the merge and this
+    # recipe only tidied up afterwards, so "not contained" could only mean
+    # "you have not merged it yet" and refusing was the only safe answer.
+    # Under the policy the MAINTAINER makes the merge, so "not contained" is
+    # now the ordinary case and this recipe is what makes it - once, locally,
+    # signed, and having asked the forge whether it is allowed to.
+    #
+    # The refusal is not gone. It has moved into _workflow-merge-signed, which
+    # refuses on each of that step's own preconditions and names which one -
+    # and everything below still runs only if containment holds AFTERWARDS,
+    # asserted rather than assumed.
+    landed=1
+    git merge-base --is-ancestor "${head_sha}" "${base_remote}/{{WORKFLOW_MAIN}}" || landed=0
 
     git checkout {{WORKFLOW_MAIN}}
     before="$(git rev-parse --short HEAD)"
     git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
+
+    if [ "${landed}" = 0 ]; then
+        just --justfile "{{justfile()}}" _workflow-merge-signed "${branch}" "${base_remote}"
+
+        # ASSERT, DO NOT TRUST. Everything after this point deletes the branch
+        # on every remote that carries it. The old refusal guarded that; this
+        # is the same guard, asked after the step that is now allowed to fix it.
+        if ! git merge-base --is-ancestor "${head_sha}" "${base_remote}/{{WORKFLOW_MAIN}}"; then
+            echo "" >&2
+            echo "REFUSING: the merge ran and ${base_remote}/{{WORKFLOW_MAIN}} still" >&2
+            echo "  does not contain ${branch}. Nothing has been deleted." >&2
+            echo "" >&2
+            echo "  Not yet on {{WORKFLOW_MAIN}}:" >&2
+            git log --oneline --no-decorate "${base_remote}/{{WORKFLOW_MAIN}}..${branch}" \
+                | sed 's/^/    /' >&2
+            exit 1
+        fi
+    fi
+
     after="$(git rev-parse --short HEAD)"
 
     # Only remotes that exist, and only those whose integration branch is behind.

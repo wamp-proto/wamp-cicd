@@ -91,14 +91,21 @@ a person; the one that admits work into protected history cannot.
 
 ## 3. The landing procedure
 
-After a pull request has been reviewed and approved:
+After a pull request has been reviewed and approved, one command:
 
 ```console
-git fetch --all --prune
+just land <branch>
+```
+
+which is the sequence below, guarded at every step and refusing rather than
+half-doing any of it:
+
+```console
+git fetch --all --prune                      # every remote, not just the authority
 git checkout <integration-branch>
 git pull --ff-only <authority> <integration-branch>
 
-git merge --no-ff <remote>/<branch>          # signed - see below
+git merge --no-ff -S <branch>                # signed, explicitly
 
 gitsign verify \
   --certificate-identity=<maintainer-identity> \
@@ -106,7 +113,16 @@ gitsign verify \
 
 git push <authority> <integration-branch>
 # then every other remote that carries the integration branch
+# then delete the dev branch, locally and on every remote that carries it
 ```
+
+The guards, in the order they can be answered, each refusing before anything is
+created — the local branch must be the newest copy of itself **and** must not be
+*ahead* of the copy the reviewer looked at; signing must be configured *in this
+repository*; the forge must report the pull request open and mergeable, and not
+have changes requested; and containment in the authority's integration branch is
+**asserted after the merge**, never assumed, because everything after it deletes
+the branch.
 
 `--no-ff` is required, not stylistic: without it Git fast-forwards where it can
 and no merge commit exists to sign or to prove containment with.
@@ -122,7 +138,12 @@ merge commit
 ```
 
 **Verify before pushing, not after.** A merge that was made but not signed must
-not reach the protected branch, and the check costs one command.
+not reach the protected branch; the check costs one command, and if it fails the
+merge is undone rather than pushed.
+
+**`-S` explicitly, not `commit.gpgsign`.** Whether a merge is signed must not
+depend on a config key that is easy to unset and invisible when it is. The
+policy is about this object, so the command asks for it.
 
 This belongs in a recipe rather than in a runbook. It is six commands, one of
 which must be signed, three of which are pushes to different remotes, and one of
@@ -198,7 +219,7 @@ Two consequences that follow directly and are easy to leave unplanned:
 
 ## 6. Consequences to plan for
 
-Three, each of which will otherwise be discovered at the first merge — and a
+Four, each of which will otherwise be discovered at the first merge — and a
 policy whose costs are discovered at the moment of use is a policy that gets
 skipped.
 
@@ -210,10 +231,20 @@ skipped.
 2. **`land` changes shape.** It was built for a world in which the forge had
    already created the merge and the maintainer only fast-forwarded afterwards.
    Under this policy the maintainer *creates* the merge, so the load-bearing
-   step of the cycle needs a recipe.
+   step of the cycle needed a recipe — `wamp-cicd#27`. A branch that was merged
+   the old way still lands exactly as before, with no signing required: `land`
+   asks whether the merge already exists and only makes one if it does not.
 3. **Automation cannot sign, and must not try.** Keyless signing binds an OIDC
    identity; an automated assistant producing one would be impersonating a
    person. Every merge is a human act at the control node.
+4. **A hook that refuses all commits on the integration branch blocks this.**
+   Measured 2026-08-22: a `commit-msg` hook written to keep AI assistants off
+   `main` refuses *every* commit there, maintainer merges included, and the
+   remedy it prints is to turn hooks off. It fires on `git merge`, leaving a
+   half-completed merge behind. `land` aborts cleanly and says so, but the hook
+   itself has to learn the difference between an ordinary commit and a
+   maintainer-signed merge before this policy can be used in the repositories
+   that carry it.
 
 Point 3 also fixes the scope of this policy, and the fixing matters: **unsigned
 commits on dev branches are correct and expected.** The requirement is about what

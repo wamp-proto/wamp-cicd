@@ -9,6 +9,15 @@ set unstable := true
 set positional-arguments := true
 set script-interpreter := ['uv', 'run', '--script']
 
+# The branch workflow this repository ships to nine others - and, until now, did
+# not run against itself (#20). `workflow.just` is the file beside this one;
+# SCM-EXCHANGE-MODEL.md and MERGE-AND-SIGNING-POLICY.md decide what it does.
+#
+# One line, and it is the only way #27's recipe can be exercised in the
+# repository that owns it: a recipe that cannot run where it is written cannot
+# be watched failing.
+import 'workflow.just'
+
 # Project base directory = directory of this justfile
 PROJECT_DIR := justfile_directory()
 
