@@ -279,9 +279,36 @@ where:
     echo "  repository   ${repo}"
     echo "  branch       ${branch}"
     echo "  working tree ${tree}"
+    # EVERY REMOTE ANSWER BELOW COMES FROM A CACHE, AND THE CACHE HAS A DATE.
+    #
+    # This recipe deliberately does not fetch - it is read-only and safe to run
+    # on a dirty tree mid-work. But `publish` and `land` both fetch every remote
+    # before comparing, the second of them with the comment "a remote that was
+    # not fetched cannot answer it", and `where` is the recipe whose ENTIRE
+    # output is such a comparison. Printing an undated cache in the present
+    # tense is the failure A12 is about.
+    #
+    # So say when. `.git/FETCH_HEAD` is written by `git fetch` and `git pull`
+    # and is the closest thing git keeps to "when did I last ask" - it is not
+    # per-remote, and the label says so rather than implying more precision
+    # than exists.
+    fetch_head="$(git rev-parse --git-dir)/FETCH_HEAD"
+    if [ -f "${fetch_head}" ]; then
+        fetched="$(date -r "${fetch_head}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo 'unknown')"
+        age_s=$(( $(date +%s) - $(date -r "${fetch_head}" +%s 2>/dev/null || date +%s) ))
+        if   [ "${age_s}" -lt 3600 ]  ; then age="$((age_s / 60)) min ago"
+        elif [ "${age_s}" -lt 86400 ] ; then age="$((age_s / 3600)) h ago"
+        else                                age="$((age_s / 86400)) DAYS ago"
+        fi
+        fetched="${fetched} (${age}) - the remote answers below are as fresh as this"
+    else
+        fetched="NEVER - every remote answer below is a guess"
+    fi
+
     echo "  hooks        ${hooks_state#*|}"
     echo "  submodules   ${subs_state#*|}"
     echo "  signing      ${signing}"
+    echo "  last fetch   ${fetched}"
     echo ""
 
     # Per remote, rather than assuming which remote means what. Remote names and
@@ -299,6 +326,45 @@ where:
             printf '    %-16s %s\n' "${remote}" "${url}"
 
             main_ref="refs/remotes/${remote}/{{WORKFLOW_MAIN}}"
+
+            # ON THE INTEGRATION BRANCH THE TWO QUESTIONS COLLAPSE INTO ONE, AND
+            # THE ANSWER IS DIRECTIONAL (#28).
+            #
+            # "DIFFERS from local" and "NOT landed" are about a DEV branch's
+            # fate. Standing on {{WORKFLOW_MAIN}}, both compare the same pair of
+            # refs, so a remote one commit behind printed both at once and the
+            # reader had to reconstruct which of several situations they were
+            # in. On 2026-08-22 that output was read as the footprint of a
+            # squash merge - a reasonable reading, since squashes do break
+            # containment and one had happened in a sibling repository the day
+            # before - and the truth was two remotes a single merge behind. Cost:
+            # a wrong diagnosis; fix: two pushes.
+            #
+            # A status line that names no remedy makes the reader invent one.
+            if [ "${branch}" = "{{WORKFLOW_MAIN}}" ]; then
+                if ! git show-ref --verify --quiet "${main_ref}"; then
+                    printf '    %-16s %s\n' "" "no {{WORKFLOW_MAIN}} here"
+                else
+                    here="$(git rev-parse HEAD)"
+                    there="$(git rev-parse "${remote}/{{WORKFLOW_MAIN}}")"
+                    if [ "${here}" = "${there}" ]; then
+                        printf '    %-16s %s\n' "" "in sync"
+                    elif git merge-base --is-ancestor "${there}" "${here}"; then
+                        n="$(git rev-list --count "${there}..${here}")"
+                        printf '    %-16s %s\n' "" \
+                            "BEHIND YOU by ${n} commit(s) - git push ${remote} {{WORKFLOW_MAIN}}"
+                    elif git merge-base --is-ancestor "${here}" "${there}"; then
+                        n="$(git rev-list --count "${here}..${there}")"
+                        printf '    %-16s %s\n' "" \
+                            "AHEAD of you by ${n} commit(s) - git pull --ff-only ${remote} {{WORKFLOW_MAIN}}"
+                    else
+                        printf '    %-16s %s\n' "" \
+                            "DIVERGED from your {{WORKFLOW_MAIN}} - neither contains the other"
+                    fi
+                fi
+                continue
+            fi
+
             if git show-ref --verify --quiet "${main_ref}"; then
                 if git merge-base --is-ancestor HEAD "${remote}/{{WORKFLOW_MAIN}}" 2>/dev/null; then
                     landed="LANDED - {{WORKFLOW_MAIN}} contains this commit"
@@ -340,6 +406,28 @@ where:
 
     echo "  vs ${base}   ${ahead} ahead, ${behind} behind"
     echo ""
+
+    # THE ADVICE BELOW IS ABOUT A DEV BRANCH, so it must not be printed while
+    # standing on the integration branch (#28). "This branch adds" and "cut from
+    # the wrong parent" are meaningless there - the commits are simply merges
+    # not yet pushed - and printing them alongside a remote that is behind was
+    # half of what made that state read as something exotic.
+    if [ "${branch}" = "{{WORKFLOW_MAIN}}" ]; then
+        if [ "${ahead}" != "0" ] && [ "${ahead}" != "?" ]; then
+            echo "  your {{WORKFLOW_MAIN}} has ${ahead} commit(s) ${base} does not:"
+            git log --oneline --no-decorate "${base}..HEAD" | sed 's/^/    /'
+            echo ""
+            echo "  Push them, or that remote keeps serving an older tree to"
+            echo "  whoever clones from it."
+            echo ""
+        fi
+        if [ "${behind}" != "0" ] && [ "${behind}" != "?" ]; then
+            echo "  ${base} has ${behind} commit(s) yours does not."
+            echo "  git pull --ff-only ${base_remote} {{WORKFLOW_MAIN}}"
+            echo ""
+        fi
+        exit 0
+    fi
 
     if [ "${ahead}" != "0" ] && [ "${ahead}" != "?" ]; then
         echo "  this branch adds:"
