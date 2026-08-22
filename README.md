@@ -1,9 +1,29 @@
 # The Web Application Messaging Protocol: CI/CD Support Module
 
-Centralized reusable CI/CD (GitHub) helpers and workflows.
+Centralized reusable CI/CD (GitHub) helpers and workflows, and the SCM,
+merge and signing policy they implement.
 This is intended to be added to WAMP target (using) repositories as a Git submodule.
 
 See also: [AI Support Module](https://github.com/wamp-proto/wamp-ai)
+
+## What this module decides
+
+Three documents, and the recipes that implement them. A using repository gets
+all of them by carrying this submodule, which is the point: a rule that lives
+one `git clone` away from the repositories that must follow it is a rule those
+repositories cannot check themselves against.
+
+| document | decides |
+|---|---|
+| [SCM-EXCHANGE-MODEL.md](SCM-EXCHANGE-MODEL.md) | how work is staged between a control node, a private exchange, AI assistants and the forge — and what every remote is called |
+| [MERGE-AND-SIGNING-POLICY.md](MERGE-AND-SIGNING-POLICY.md) | how an approved branch becomes protected history: merge commits only, made and signed by the maintainer rather than by the forge |
+| [SLSA.md](SLSA.md) | the build-provenance target and what is still missing for it |
+
+[`workflow.just`](workflow.just) implements the first two — `just where`,
+`just new-branch`, `just publish`, `just land`. It implements; they decide.
+
+**These are patterns, not inventories.** Which repositories, hosts and people
+fill their parameters is deployment-specific and is not recorded here.
 
 ## Benefits of Centralized wamp-ai and wamp-cicd
 

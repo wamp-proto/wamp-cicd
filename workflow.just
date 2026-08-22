@@ -4,8 +4,14 @@
 #
 # The SCM model these recipes serve - instance-named exchange remotes, the fork
 # and shared-repository topologies, and which remote is authoritative for "has
-# this landed" - is defined in SCM-EXCHANGE-MODEL.md at the root of the
-# aaiare-ansible-collection repository. This file implements; that file decides.
+# this landed" - is defined in SCM-EXCHANGE-MODEL.md beside this file. How an
+# approved branch LANDS - merge commits rather than squashes, and a merge signed
+# by the maintainer rather than by the forge - is MERGE-AND-SIGNING-POLICY.md,
+# also beside this file. This file implements; those files decide.
+#
+# The model used to live in a private repository, so nine repositories carried
+# an implementation of a model none of their contributors could read; the
+# landing policy was never written down at all (wamp-cicd#26).
 #
 # WHY THIS FILE EXISTS (aaiare-metal-typedefint#14)
 #
