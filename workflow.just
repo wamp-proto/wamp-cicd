@@ -1045,51 +1045,33 @@ publish branch='':
 # -- finish a branch
 # -----------------------------------------------------------------------------
 
-# Make the merge that lands a reviewed branch, locally and signed (internal).
+# Everything that can be refused BEFORE the operator's branch changes (internal).
 #
-# MERGE-AND-SIGNING-POLICY.md, made executable. The forge decides that a pull
-# request is ready; THIS makes the merge commit that enters protected history,
-# so that history is attributable to the maintainer rather than to the forge.
+# WHY THIS IS SEPARATE FROM THE MERGE (#32). `land` used to check the branch
+# out, fast-forward the integration branch, and only then ask whether it was
+# allowed to merge at all - so a refusal for an unset config left the operator
+# standing on the integration branch, which is the one branch this whole
+# workflow exists to protect. The next `land` then said "not on a dev branch",
+# advice that is correct and useless, because `land` is what put them there.
 #
-# WHY IT IS NOT SIX COMMANDS IN A RUNBOOK. A merge, a signature, a verification
-# and three pushes, per landing, forever. Every clerical guard in this file
-# replaced a step that had been forgotten at least once, and this is the step
-# that decides what enters the branch everyone reads.
+# So: three of the five preconditions need nothing but the dev branch and the
+# network, and they are asked here, first. The two that genuinely require being
+# ON the integration branch - the merge and its verification - stay in
+# `_workflow-merge-signed`, behind a trap that restores the branch.
 #
-# Assumes the caller is ON the integration branch and current with the
-# authority - `land` does that immediately before calling this, and this
-# refuses if it is not true rather than trusting it.
-#
-# ORDER MATTERS. Each check below can only be answered once the one before it
-# has passed, and each refuses BEFORE anything is created:
-#
-#   1  on the integration branch, current with the authority
-#   2  the local branch is the same commit as the reviewed one - not ahead
-#   3  signing is configured, and for THIS repository
-#   4  the forge says the pull request is open and mergeable
-#   5  the merge itself, aborted cleanly if a hook refuses it
-#   6  the signature verifies against the expected identity AND issuer,
-#      BEFORE the object leaves this machine
-#   7  push to the authority first
-_workflow-merge-signed branch base_remote:
+# Prints one line on success: what the forge said about the pull request, which
+# the merge step then records in the commit message.
+_workflow-merge-preflight branch:
     #!/usr/bin/env bash
     set -euo pipefail
 
     branch="{{branch}}"
-    base_remote="{{base_remote}}"
 
-    # 1 --------------------------------------------------------------------
-    if [ "$(git symbolic-ref --short HEAD 2>/dev/null || echo '')" != "{{WORKFLOW_MAIN}}" ]; then
-        echo "REFUSING: not on {{WORKFLOW_MAIN}}; this makes a merge INTO it." >&2
-        exit 1
-    fi
-
-    # 2 --------------------------------------------------------------------
-    # _workflow-branch-behind proves the local branch is not BEHIND any copy.
-    # This is the other half, and it is the half that merges unreviewed work:
-    # a local branch AHEAD of the copy the pull request was opened against
-    # carries commits nobody has seen. The remedy is to publish and let the
-    # review see them, never to merge them quietly.
+    # THE REVIEWED COPY AND THE LOCAL COPY MUST BE THE SAME COMMIT.
+    # `_workflow-branch-behind` proves the local branch is not BEHIND any copy.
+    # This is the other half, and it is the half that merges unreviewed work: a
+    # local branch AHEAD of the copy the pull request was opened against carries
+    # commits nobody has seen.
     ahead=""
     for remote in $(just --justfile "{{justfile()}}" _workflow-publish-remotes); do
         git show-ref --verify --quiet "refs/remotes/${remote}/${branch}" || continue
@@ -1108,7 +1090,6 @@ _workflow-merge-signed branch base_remote:
         exit 1
     fi
 
-    # 3 --------------------------------------------------------------------
     sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
     if [ "${sign_state%%|*}" != "ok" ]; then
         echo "" >&2
@@ -1116,26 +1097,26 @@ _workflow-merge-signed branch base_remote:
         echo "" >&2
         echo "  An unsigned merge on {{WORKFLOW_MAIN}} is the object the policy" >&2
         echo "  exists to keep out, so this refuses rather than making one." >&2
-        echo "  gitsign is configured PER REPOSITORY:" >&2
+        echo "" >&2
+        echo "  The IDENTITY is who you are - set it once, for every repository:" >&2
+        echo "" >&2
+        echo "    git config --global workflow.signingIdentity <your-identity>" >&2
+        echo "" >&2
+        echo "  HOW a repository signs is per repository, deliberately:" >&2
         echo "" >&2
         echo "    git config gpg.format x509" >&2
         echo "    git config gpg.x509.program gitsign" >&2
-        echo "    git config commit.gpgsign true" >&2
-        echo "    git config workflow.signingIdentity <your-certificate-identity>" >&2
+        echo "" >&2
+        echo "  Forgotten which identity? Any commit you already signed says so:" >&2
+        echo "    git verify-commit <sha>   ->  Good signature from [<identity>](<issuer>)" >&2
         echo "" >&2
         exit 1
     fi
-    identity="$(echo "${sign_state}" | cut -d'|' -f2)"
-    issuer="$(echo "${sign_state}" | cut -d'|' -f3)"
 
-    # 4 --------------------------------------------------------------------
-    # WHERE THERE IS A FORGE, THE FORGE DECIDES READINESS. This recipe must not
-    # become a way around review - that is the whole reason the merge is allowed
-    # to happen locally at all.
-    #
-    # Where there is NO forge remote there is no pull request to consult, and
-    # this is skipped out loud rather than silently: inside an instance the
-    # exchange is the only remote by design.
+    # WHERE THERE IS A FORGE, THE FORGE DECIDES READINESS. This must not become
+    # a way around review - that is the whole reason the merge may happen
+    # locally at all. Where there is NO forge remote there is no pull request to
+    # consult, and this is skipped out loud rather than silently.
     #
     # It checks OPEN and MERGEABLE, and refuses on CHANGES_REQUESTED. It does
     # NOT require an approval: on a single-maintainer repository nothing ever
@@ -1147,11 +1128,37 @@ _workflow-merge-signed branch base_remote:
             echo "  installed, so the pull request's state cannot be read." >&2
             exit 1
         fi
-        pr_json="$(gh pr view "${branch}" --json number,state,mergeable,reviewDecision 2>/dev/null || true)"
-        if [ -z "${pr_json}" ]; then
+        # "THERE IS NO PULL REQUEST" AND "I COULD NOT ASK" ARE DIFFERENT
+        # ANSWERS, and an earlier version of this reported both as the first.
+        # `2>/dev/null || true` turned an auth failure, an ambiguous repository
+        # and a rate limit into "no pull request found for X" - a refusal that
+        # names the wrong cause and sends the reader to look at the forge.
+        pr_err=""
+        if ! pr_json="$(gh pr view "${branch}" \
+                --json number,state,mergeable,reviewDecision 2>&1)"; then
+            pr_err="${pr_json}"
+            pr_json=""
+        fi
+        if [ -n "${pr_err}" ] || [ -z "${pr_json}" ]; then
             echo "" >&2
-            echo "REFUSING: no pull request found for ${branch}." >&2
-            echo "  The forge hosts the review; landing without one skips it." >&2
+            case "${pr_err}" in
+                *"no pull requests found"*|*"no open pull requests"*|"")
+                    echo "REFUSING: no pull request found for ${branch}." >&2
+                    echo "  The forge hosts the review; landing without one" >&2
+                    echo "  skips it. Open one, then run this again - nothing" >&2
+                    echo "  has moved." >&2
+                    ;;
+                *)
+                    echo "REFUSING: could not ask the forge about ${branch}." >&2
+                    echo "" >&2
+                    echo "  gh said:" >&2
+                    echo "${pr_err}" | sed 's/^/    /' >&2
+                    echo "" >&2
+                    echo "  This is NOT 'there is no pull request'. Until the" >&2
+                    echo "  forge can be asked, landing would skip the review" >&2
+                    echo "  without knowing it." >&2
+                    ;;
+            esac
             exit 1
         fi
         pr_number="$(echo "${pr_json}" | sed -n 's/.*"number":\([0-9]*\).*/\1/p')"
@@ -1173,9 +1180,69 @@ _workflow-merge-signed branch base_remote:
         fi
         pr_note="pull request #${pr_number}, ${pr_state}, ${pr_mergeable}, review: ${pr_review:-none}"
     fi
-    echo "--> ${pr_note}"
+    echo "${pr_note}"
 
-    # 5 --------------------------------------------------------------------
+# Make the merge that lands a reviewed branch, locally and signed (internal).
+#
+# MERGE-AND-SIGNING-POLICY.md, made executable. The forge decides that a pull
+# request is ready; THIS makes the merge commit that enters protected history,
+# so that history is attributable to the maintainer rather than to the forge.
+#
+# WHY IT IS NOT SIX COMMANDS IN A RUNBOOK. A merge, a signature, a verification
+# and three pushes, per landing, forever. Every clerical guard in this file
+# replaced a step that had been forgotten at least once, and this is the step
+# that decides what enters the branch everyone reads.
+#
+# ONLY THE STEPS THAT REQUIRE BEING ON THE INTEGRATION BRANCH LIVE HERE (#32).
+# Everything answerable earlier is in `_workflow-merge-preflight`, which `land`
+# runs BEFORE it changes the operator's branch. `pr_note` is what that step
+# learned from the forge, passed in so it is not asked twice.
+#
+# IT DOES THE CHECKOUT ITSELF, AND THAT IS THE POINT (#32). `land` used to
+# check out the integration branch and THEN invoke this recipe - so `just`
+# re-read the justfile from a working tree that had just reverted to the
+# integration branch's copy. In this repository that copy is an older
+# `workflow.just` with a different signature, and the invocation died with
+# "Justfile does not contain recipe `pull request #33, OPEN, ...`" - the third
+# argument read as a recipe name, because the version on disk took two.
+#
+# So `just` must finish reading the recipes while the dev branch is still
+# checked out. After the checkout below, nothing invokes `just` again.
+#
+#   1  read the signing configuration - the last sub-invocation, done first
+#   2  move to the integration branch and make it current with the authority
+#   3  the merge itself, aborted cleanly if a hook refuses it
+#   4  the signature verifies against the expected identity AND issuer,
+#      BEFORE the object leaves this machine
+#   5  push to the authority first
+_workflow-merge-signed branch base_remote pr_note:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    branch="{{branch}}"
+    base_remote="{{base_remote}}"
+    pr_note="{{pr_note}}"
+
+    # 1 --------------------------------------------------------------------
+    # THE LAST `just` INVOCATION, AND IT HAPPENS BEFORE THE CHECKOUT. See the
+    # header: after the working tree moves, the justfile on disk may not be the
+    # one this recipe came from.
+    sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
+    identity="$(echo "${sign_state}" | cut -d'|' -f2)"
+    issuer="$(echo "${sign_state}" | cut -d'|' -f3)"
+
+    # 2 --------------------------------------------------------------------
+    echo "--> Moving to {{WORKFLOW_MAIN}}"
+    git checkout {{WORKFLOW_MAIN}}
+    # SUBMODULE WORKTREES DO NOT FOLLOW A CHECKOUT, and `land` produced the
+    # dirtiness it then refused on because of it (#32): the recorded revisions
+    # changed, the checked-out ones did not, and `git status` said modified.
+    # Safe here - the clean check in `land` already refused a tree with real
+    # local changes, so nothing can be lost.
+    git submodule update --init --recursive --quiet 2>/dev/null || true
+    git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
+
+    # 2 --------------------------------------------------------------------
     # The subject carries the issue number the way every other commit here does,
     # derived from the branch name rather than asked for - `new-branch` is what
     # made the name, so the two cannot disagree.
@@ -1219,7 +1286,7 @@ _workflow-merge-signed branch base_remote:
         exit 1
     fi
 
-    # 6 --------------------------------------------------------------------
+    # 3 --------------------------------------------------------------------
     # BEFORE IT LEAVES THIS MACHINE. A merge that was made but not signed must
     # not reach the protected branch, and the check costs one command.
     echo "--> Verifying the merge signature"
@@ -1233,7 +1300,7 @@ _workflow-merge-signed branch base_remote:
         exit 1
     fi
 
-    # 7 --------------------------------------------------------------------
+    # 4 --------------------------------------------------------------------
     # The authority first, deliberately. Everything else in this file treats
     # the authority's integration branch as the answer to "has this landed",
     # so it is the copy that must exist before any other is told about it.
@@ -1363,12 +1430,79 @@ land branch='':
     landed=1
     git merge-base --is-ancestor "${head_sha}" "${base_remote}/{{WORKFLOW_MAIN}}" || landed=0
 
-    git checkout {{WORKFLOW_MAIN}}
-    before="$(git rev-parse --short HEAD)"
-    git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
+    pr_note=""
+    if [ "${landed}" = 0 ]; then
+        # DOES THIS BRANCH CHANGE THE FILE THIS RECIPE COMES FROM? (#32)
+        #
+        # Checking out {{WORKFLOW_MAIN}} restores the submodule revisions it
+        # records, so a branch that bumps `.cicd` swaps `workflow.just` back to
+        # the old copy MID-RUN - and the rest of the landing then executes code
+        # the operator had already replaced. Observed 2026-08-23: a second
+        # attempt printed a refusal in the voice of the version being retired.
+        #
+        # This is not a defect to fix, it is what bootstrapping means, and it
+        # happens exactly once per repository. It is worth SAYING rather than
+        # letting someone discover it through three refusals.
+        selfmod="$(git diff --name-only \
+            "${base_remote}/{{WORKFLOW_MAIN}}...${branch}" -- .cicd .ai 2>/dev/null || true)"
+        if [ -n "${selfmod}" ]; then
+            echo "" >&2
+            echo "REFUSING: ${branch} changes $(echo ${selfmod} | tr '\n' ' ')- where this" >&2
+            echo "  recipe and the commit hooks come from." >&2
+            echo "" >&2
+            echo "  Landing it here would swap them out half way through, and the" >&2
+            echo "  copy on {{WORKFLOW_MAIN}} cannot make a signed merge yet -" >&2
+            echo "  that is what this branch installs." >&2
+            echo "" >&2
+            echo "  Land this one through the forge: merge the pull request there," >&2
+            echo "  then:" >&2
+            echo "" >&2
+            echo "    git checkout {{WORKFLOW_MAIN}} && git pull --ff-only ${base_remote} {{WORKFLOW_MAIN}}" >&2
+            echo "    git submodule update --init --recursive" >&2
+            echo "" >&2
+            echo "  Every branch after it can use 'just land'." >&2
+            echo "" >&2
+            exit 1
+        fi
+
+        # ASKED BEFORE ANYTHING MOVES. This is the whole point of #32: a
+        # refusal here leaves the operator exactly where they were.
+        if ! pr_note="$(just --justfile "{{justfile()}}" _workflow-merge-preflight "${branch}")"; then
+            exit 1
+        fi
+        echo "--> ${pr_note}"
+    fi
+
+    # FROM HERE THE OPERATOR'S BRANCH CHANGES, so a failure must put it back.
+    # The merge and its verification can only happen on the integration branch;
+    # failing there must not leave anyone standing on it.
+    start_branch="${branch}"
+    trap 'st=$?; if [ ${st} -ne 0 ]; then \
+              git merge --abort 2>/dev/null || true; \
+              git checkout --quiet "${start_branch}" 2>/dev/null || true; \
+              git submodule update --init --recursive --quiet 2>/dev/null || true; \
+              echo "--> restored to ${start_branch}" >&2; \
+          fi' EXIT
+
+    # WHAT {{WORKFLOW_MAIN}} WAS BEFORE ANY OF THIS. Captured from the
+    # authority rather than from the local copy, because the local one may be
+    # behind and because `_workflow-merge-signed` is about to move both.
+    before="$(git rev-parse --short "${base_remote}/{{WORKFLOW_MAIN}}")"
 
     if [ "${landed}" = 0 ]; then
-        just --justfile "{{justfile()}}" _workflow-merge-signed "${branch}" "${base_remote}"
+        # IT DOES ITS OWN CHECKOUT, DELIBERATELY (#32). Invoking it from the dev
+        # branch is what lets `just` finish reading the recipes before the
+        # working tree moves - see that recipe's header for the failure this
+        # replaces.
+        just --justfile "{{justfile()}}" _workflow-merge-signed \
+            "${branch}" "${base_remote}" "${pr_note}"
+    else
+        git checkout {{WORKFLOW_MAIN}}
+        git submodule update --init --recursive --quiet 2>/dev/null || true
+        git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
+    fi
+
+    if [ "${landed}" = 0 ]; then
 
         # ASSERT, DO NOT TRUST. Everything after this point deletes the branch
         # on every remote that carries it. The old refusal guarded that; this
@@ -1386,6 +1520,11 @@ land branch='':
     fi
 
     after="$(git rev-parse --short HEAD)"
+
+    # And once more, because the merge moved the recorded revisions too. Leaving
+    # them stale is how the next `just where` reports "NOT at the pinned
+    # revision" about a repository that just landed correctly.
+    git submodule update --init --recursive --quiet 2>/dev/null || true
 
     # Only remotes that exist, and only those whose integration branch is behind.
     for remote in $(git remote); do

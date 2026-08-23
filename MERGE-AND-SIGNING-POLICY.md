@@ -219,7 +219,7 @@ Two consequences that follow directly and are easy to leave unplanned:
 
 ## 6. Consequences to plan for
 
-Four, each of which will otherwise be discovered at the first merge — and a
+Five, each of which will otherwise be discovered at the first merge — and a
 policy whose costs are discovered at the moment of use is a policy that gets
 skipped.
 
@@ -237,7 +237,13 @@ skipped.
 3. **Automation cannot sign, and must not try.** Keyless signing binds an OIDC
    identity; an automated assistant producing one would be impersonating a
    person. Every merge is a human act at the control node.
-4. **A hook that refuses all commits on the integration branch blocks this.**
+4. **A branch that changes `.cicd` or `.ai` cannot be landed by `just land`.**
+   Checking out the integration branch restores the submodule revisions *it*
+   records, so such a branch swaps the recipe out half way through its own
+   landing. `land` detects this and says so; land that one through the forge,
+   and every branch after it can use `just land`. This happens exactly once per
+   repository and is what bootstrapping means, not a defect.
+5. **A hook that refuses all commits on the integration branch blocks this.**
    Measured 2026-08-22: a `commit-msg` hook written to keep AI assistants off
    `main` refuses *every* commit there, maintainer merges included, and the
    remedy it prints is to turn hooks off. It fires on `git merge`, leaving a
@@ -256,17 +262,52 @@ check that refuses correct work is the check that gets disabled.
 
 ## 7. Configuration
 
-`gitsign` is configured **per repository**, not globally:
+Two kinds of setting, and they belong at different scopes. Conflating them is
+what makes this fiddly.
+
+**Who you are — set once, globally.** The identity is a fact about the person,
+not a policy about a repository:
+
+```console
+git config --global workflow.signingIdentity <your-certificate-identity>
+```
+
+That is the subject Fulcio puts in the certificate: for a GitHub identity, the
+email on the account. `workflow.oidcIssuer` defaults to
+`https://github.com/login/oauth` and only needs setting if a different issuer
+applies — see `GITSIGN.md`, where the *three* URLs that look like issuers are
+distinguished.
+
+**How a repository signs — set per repository, deliberately:**
 
 ```console
 git config gpg.format x509
 git config gpg.x509.program gitsign
-git config commit.gpgsign true
 ```
 
-A repository without this silently falls through to the OpenPGP backend, where
+Not global, because globally these make *every* commit in *every* repository on
+the machine gitsign-signed — including repositories under no such policy — and
+each signature needs a live OIDC session, so a commit made offline simply fails.
+A repository without them silently falls through to the OpenPGP backend, where
 `git commit -S` fails with *"No secret key"* — which reads like a broken key and
 is not.
+
+`commit.gpgsign true` is optional and orthogonal: `just land` signs the merge
+with an explicit `-S`, so the policy does not depend on it. Set it if you want
+your ordinary commits signed too.
+
+### Forgotten which identity?
+
+Any commit you have already signed prints both values:
+
+```console
+$ git verify-commit <sha>
+gitsign: Good signature from [tobias.oberstein@gmail.com](https://github.com/login/oauth)
+                              ^ workflow.signingIdentity   ^ workflow.oidcIssuer
+```
+
+`just where` reports what is missing, and names the first thing it finds — so
+after fixing one, run it again.
 
 **Do not read `git log --format=%G?` to answer "is this signed".** A clone
 without `gpg.x509.program` prints `N`, which means *"cannot verify"*, not
