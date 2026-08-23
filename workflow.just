@@ -302,6 +302,20 @@ where:
         tree="$(git status --porcelain | wc -l) file(s) modified or untracked"
     fi
 
+    # WHICH COMMIT, SPELLED OUT. `where` answers "where am I", and until now it
+    # named the branch but not the object - so the question was finished with a
+    # `git log -n1 --oneline` every time. Two lines rather than one because the
+    # subject of a merge or an audit commit is long enough to push the sha out
+    # of a reader's attention, and the sha is the half that gets copied.
+    #
+    # An empty repository has no HEAD; say so rather than printing an error.
+    if commit_sha="$(git rev-parse --short HEAD 2>/dev/null)"; then
+        commit_subject="$(git log -1 --format=%s 2>/dev/null)"
+    else
+        commit_sha="(none)"
+        commit_subject="no commit yet"
+    fi
+
     hooks_state="$(just --justfile "{{justfile()}}" _workflow-hooks-state)"
     subs_state="$(just --justfile "{{justfile()}}" _workflow-submodule-state)"
 
@@ -327,6 +341,8 @@ where:
     echo ""
     echo "  repository   ${repo}"
     echo "  branch       ${branch}"
+    echo "  commit       ${commit_sha}"
+    echo "  message      ${commit_subject}"
     echo "  working tree ${tree}"
     # EVERY REMOTE ANSWER BELOW COMES FROM A CACHE, AND THE CACHE HAS A DATE.
     #
@@ -575,7 +591,15 @@ _workflow-submodule-state:
         echo "bad|${drifted} of ${count} NOT at the pinned revision: ${names}"
         exit 0
     fi
-    echo "ok|${count} at their pinned revision"
+    # AND WHICH REVISION, because "at their pinned revision" answers the wrong
+    # half of the question. That the checkout matches the pin is the cheap half;
+    # WHICH pin is what a reader is actually after, and it was reached for by
+    # hand often enough - `git submodule status`, then trim the shas - to be
+    # worth printing. Order follows `git submodule status`, which is by path, so
+    # two repositories can be compared by eye.
+    pins="$(echo "${status}" | awk '{printf "%s=>%s, ", $2, substr($1,1,7)}' \
+            | sed 's/, $//')"
+    echo "ok|${count} at their pinned revision (${pins})"
 
 # Check every submodule against its upstream HEAD. NEEDS THE NETWORK.
 #
