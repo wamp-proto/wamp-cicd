@@ -141,9 +141,25 @@ merge commit
 not reach the protected branch; the check costs one command, and if it fails the
 merge is undone rather than pushed.
 
-**`-S` explicitly, not `commit.gpgsign`.** Whether a merge is signed must not
-depend on a config key that is easy to unset and invisible when it is. The
-policy is about this object, so the command asks for it.
+**`-S` explicitly, not `commit.gpgsign`.** Whether an object this policy is
+about gets signed must not depend on a config key that is easy to unset and
+invisible when it is. The policy is about the object, so the command asks for
+it. This applies to all three recipes that create one: the landing merge, the
+audit commit `just new-branch` makes, and `just commit-on-main`.
+
+It was not always all three, and the gap is what earned this paragraph its
+scope. On 2026-08-23 four dev branches were cut in four repositories within five
+minutes; `commit.gpgsign` happened to be set in one clone, so exactly one audit
+commit was signed and nothing said the others differed:
+
+```
+metal       490b239  UNSIGNED      collection  a82dc14  UNSIGNED
+assurance   a7eb311  SIGNED        campfireos  4186a73  UNSIGNED
+```
+
+The audit commit is the *human-only* act the whole gate is built around, and it
+is the one commit an AI assistant must not be able to produce, so it was the
+last one that should have depended on an invisible config bit (wamp-cicd#36).
 
 This belongs in a recipe rather than in a runbook. It is six commands, one of
 which must be signed, three of which are pushes to different remotes, and one of
@@ -292,9 +308,24 @@ A repository without them silently falls through to the OpenPGP backend, where
 `git commit -S` fails with *"No secret key"* — which reads like a broken key and
 is not.
 
-`commit.gpgsign true` is optional and orthogonal: `just land` signs the merge
-with an explicit `-S`, so the policy does not depend on it. Set it if you want
-your ordinary commits signed too.
+`commit.gpgsign true` is optional and orthogonal: every recipe that makes an
+object under this policy passes `-S` itself, so the policy does not depend on
+it. What it still governs is *your own* `git commit`, typed by hand — a pin
+bump, a fixup, a correction — and those are worth signing too, so set it:
+
+```console
+git config --global commit.gpgsign true
+```
+
+`just where` reports which of the two states a repository is in, because the row
+used to read identically in a repository that signed every commit and one that
+had never signed any:
+
+```
+  signing      gitsign as <identity>; commits signed
+  signing      gitsign as <identity>; commit.gpgsign OFF
+               your own 'git commit' will not sign here - the recipes sign explicitly
+```
 
 ### Forgotten which identity?
 
