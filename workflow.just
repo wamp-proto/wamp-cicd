@@ -38,6 +38,28 @@
 # That risk is not hypothetical: wamp-ai#16 is a guard in the OTHER shared
 # submodule that refused a correct commit message, after it had propagated.
 #
+# THOSE COPIES ARE GONE AND SO IS THE DRIFT CHECK (#23). While three repositories
+# each carried a copy, `just check-workflow-just` compared them on every run and
+# earned its keep - it went red, correctly, from both directions during metal#58,
+# collection#72 and assurance#17. With one home it can no longer fail anywhere,
+# and a check that cannot fail is worse than none (A6): it reports green forever
+# and a reader who sees it in a `just check` list concludes something is being
+# verified.
+#
+# NOTHING REPLACES IT, BECAUSE THE PROPERTY IS NOW STRUCTURAL. "Every repository
+# runs the same workflow.just" was defended by comparison; it is now true by
+# construction. There is one file, in one repository, referenced by pin - and a
+# consumer that fails to fetch the submodule does not silently get a stale copy,
+# it gets
+#
+#     error: Could not find source file for import.
+#      ——▶ justfile:1:8
+#
+# and EVERY recipe in that repository stops working, including ones that have
+# nothing to do with this file, because `just` resolves imports at parse time.
+# That was found the hard way in collection#85, in CI. A fatal parse error is a
+# stronger guarantee than a checker, and it needs no maintenance.
+#
 # What makes adoption safe is not that the guards are perfect. It is that
 # adoption is DOUBLY OPT-IN: a repository sees this file only when it chooses to
 # bump the `.cicd` pin, and the recipes do nothing until it also adds
@@ -569,61 +591,6 @@ submodules-at-head:
         exit 1
     fi
     echo "--> all submodules at upstream head."
-
-# Check that this repository's copy of workflow.just has not drifted.
-#
-# "One home, three copies" holds only while the copies are the same. A copy that
-# drifts quietly is worse than no copy: the recipes would mean different things
-# in different repositories while looking identical, and guards are exactly the
-# kind of code nobody re-reads.
-#
-# Compares against every SIBLING checkout that carries the file, so it needs no
-# list of repository names and stays true as repositories are added or removed.
-# Skips - rather than fails - where no sibling is present: this file is expected
-# to be cloned alone, and a check that cannot pass there would be switched off.
-check-workflow-just:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    here="$(git rev-parse --show-toplevel)/workflow.just"
-    parent="$(dirname "$(git rev-parse --show-toplevel)")"
-
-    # A REPOSITORY THAT HAS MIGRATED HAS NOTHING TO DRIFT.
-    #
-    # Once a repository imports this file from `.cicd`, it keeps no local copy -
-    # and `diff` against a path that does not exist would report drift against
-    # every sibling that still has one, which is the opposite of the truth. So
-    # the migrated case is detected and reported as what it is.
-    #
-    # This whole recipe becomes pointless when the last local copy is gone: a
-    # drift check over a file with one home cannot fail, and a check that cannot
-    # fail is worse than no check (A6). Delete it with the last copy.
-    if [ ! -f "${here}" ]; then
-        echo "--> this repository has no local workflow.just; it imports the"
-        echo "    shared one from .cicd, so there is nothing to drift."
-        exit 0
-    fi
-
-    found=0
-    drift=0
-    for other in "${parent}"/*/workflow.just; do
-        [ -f "${other}" ] || continue
-        [ "${other}" = "${here}" ] && continue
-        found=$((found + 1))
-        name="$(basename "$(dirname "${other}")")"
-        if diff -q "${here}" "${other}" >/dev/null; then
-            echo "--> identical to ${name}"
-        else
-            echo "DRIFT: workflow.just differs from ${name}" >&2
-            diff -u "${other}" "${here}" >&2 || true
-            drift=$((drift + 1))
-        fi
-    done
-    if [ "${found}" -eq 0 ]; then
-        echo "--> no sibling checkout carries workflow.just; nothing to compare."
-        exit 0
-    fi
-    [ "${drift}" -eq 0 ] || exit 1
-    echo "--> ${found} sibling copy/copies checked, no drift."
 
 # What is left to do, from the forge (companion to `just where`).
 #
