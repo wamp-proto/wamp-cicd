@@ -1198,11 +1198,23 @@ _workflow-merge-preflight branch:
 # runs BEFORE it changes the operator's branch. `pr_note` is what that step
 # learned from the forge, passed in so it is not asked twice.
 #
-#   1  on the integration branch, current with the authority
-#   2  the merge itself, aborted cleanly if a hook refuses it
-#   3  the signature verifies against the expected identity AND issuer,
+# IT DOES THE CHECKOUT ITSELF, AND THAT IS THE POINT (#32). `land` used to
+# check out the integration branch and THEN invoke this recipe - so `just`
+# re-read the justfile from a working tree that had just reverted to the
+# integration branch's copy. In this repository that copy is an older
+# `workflow.just` with a different signature, and the invocation died with
+# "Justfile does not contain recipe `pull request #33, OPEN, ...`" - the third
+# argument read as a recipe name, because the version on disk took two.
+#
+# So `just` must finish reading the recipes while the dev branch is still
+# checked out. After the checkout below, nothing invokes `just` again.
+#
+#   1  read the signing configuration - the last sub-invocation, done first
+#   2  move to the integration branch and make it current with the authority
+#   3  the merge itself, aborted cleanly if a hook refuses it
+#   4  the signature verifies against the expected identity AND issuer,
 #      BEFORE the object leaves this machine
-#   4  push to the authority first
+#   5  push to the authority first
 _workflow-merge-signed branch base_remote pr_note:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1212,14 +1224,23 @@ _workflow-merge-signed branch base_remote pr_note:
     pr_note="{{pr_note}}"
 
     # 1 --------------------------------------------------------------------
-    if [ "$(git symbolic-ref --short HEAD 2>/dev/null || echo '')" != "{{WORKFLOW_MAIN}}" ]; then
-        echo "REFUSING: not on {{WORKFLOW_MAIN}}; this makes a merge INTO it." >&2
-        exit 1
-    fi
-
+    # THE LAST `just` INVOCATION, AND IT HAPPENS BEFORE THE CHECKOUT. See the
+    # header: after the working tree moves, the justfile on disk may not be the
+    # one this recipe came from.
     sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
     identity="$(echo "${sign_state}" | cut -d'|' -f2)"
     issuer="$(echo "${sign_state}" | cut -d'|' -f3)"
+
+    # 2 --------------------------------------------------------------------
+    echo "--> Moving to {{WORKFLOW_MAIN}}"
+    git checkout {{WORKFLOW_MAIN}}
+    # SUBMODULE WORKTREES DO NOT FOLLOW A CHECKOUT, and `land` produced the
+    # dirtiness it then refused on because of it (#32): the recorded revisions
+    # changed, the checked-out ones did not, and `git status` said modified.
+    # Safe here - the clean check in `land` already refused a tree with real
+    # local changes, so nothing can be lost.
+    git submodule update --init --recursive --quiet 2>/dev/null || true
+    git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
 
     # 2 --------------------------------------------------------------------
     # The subject carries the issue number the way every other commit here does,
@@ -1463,19 +1484,25 @@ land branch='':
               echo "--> restored to ${start_branch}" >&2; \
           fi' EXIT
 
-    git checkout {{WORKFLOW_MAIN}}
-    # SUBMODULE WORKTREES DO NOT FOLLOW A CHECKOUT, and `land` produced the
-    # dirtiness it then refused on because of it (#32): the recorded revisions
-    # changed, the checked-out ones did not, and `git status` said modified.
-    # Safe here - the clean check above already refused a tree with real local
-    # changes, so nothing can be lost.
-    git submodule update --init --recursive --quiet 2>/dev/null || true
-    before="$(git rev-parse --short HEAD)"
-    git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
+    # WHAT {{WORKFLOW_MAIN}} WAS BEFORE ANY OF THIS. Captured from the
+    # authority rather than from the local copy, because the local one may be
+    # behind and because `_workflow-merge-signed` is about to move both.
+    before="$(git rev-parse --short "${base_remote}/{{WORKFLOW_MAIN}}")"
 
     if [ "${landed}" = 0 ]; then
+        # IT DOES ITS OWN CHECKOUT, DELIBERATELY (#32). Invoking it from the dev
+        # branch is what lets `just` finish reading the recipes before the
+        # working tree moves - see that recipe's header for the failure this
+        # replaces.
         just --justfile "{{justfile()}}" _workflow-merge-signed \
             "${branch}" "${base_remote}" "${pr_note}"
+    else
+        git checkout {{WORKFLOW_MAIN}}
+        git submodule update --init --recursive --quiet 2>/dev/null || true
+        git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
+    fi
+
+    if [ "${landed}" = 0 ]; then
 
         # ASSERT, DO NOT TRUST. Everything after this point deletes the branch
         # on every remote that carries it. The old refusal guarded that; this
