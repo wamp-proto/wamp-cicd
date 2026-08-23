@@ -250,7 +250,22 @@ _workflow-signing-state:
     fi
     issuer="$(git config --get workflow.oidcIssuer || echo 'https://github.com/login/oauth')"
 
-    echo "ok|${identity}|${issuer}"
+    # A FOURTH FIELD, BECAUSE THE FIRST THREE DO NOT ANSWER "WILL A COMMIT BE
+    # SIGNED" (#36). Everything above establishes that this repository CAN sign;
+    # `commit.gpgsign` decides whether an ordinary `git commit` DOES. The two
+    # were conflated, and `where` printed "gitsign as <identity>" in three
+    # repositories where every audit commit for three weeks was unsigned.
+    #
+    # Reported rather than required: the recipes that must sign now ask for it
+    # explicitly, so this key is only about what the OPERATOR's own `git commit`
+    # will do - which is still worth knowing, because hand-typed commits (a pin
+    # bump, a fixup) are exactly where it bites.
+    case "$(git config --get commit.gpgsign || true)" in
+        [Tt]rue|1|[Yy]es|[Oo]n) gpgsign=on ;;
+        *)                      gpgsign=off ;;
+    esac
+
+    echo "ok|${identity}|${issuer}|${gpgsign}"
 
 # -----------------------------------------------------------------------------
 # -- where am I
@@ -287,19 +302,47 @@ where:
         tree="$(git status --porcelain | wc -l) file(s) modified or untracked"
     fi
 
+    # WHICH COMMIT, SPELLED OUT. `where` answers "where am I", and until now it
+    # named the branch but not the object - so the question was finished with a
+    # `git log -n1 --oneline` every time. Two lines rather than one because the
+    # subject of a merge or an audit commit is long enough to push the sha out
+    # of a reader's attention, and the sha is the half that gets copied.
+    #
+    # An empty repository has no HEAD; say so rather than printing an error.
+    if commit_sha="$(git rev-parse --short HEAD 2>/dev/null)"; then
+        commit_subject="$(git log -1 --format=%s 2>/dev/null)"
+    else
+        commit_sha="(none)"
+        commit_subject="no commit yet"
+    fi
+
     hooks_state="$(just --justfile "{{justfile()}}" _workflow-hooks-state)"
     subs_state="$(just --justfile "{{justfile()}}" _workflow-submodule-state)"
 
     # Asked here so it is answered before it is needed, not during a merge.
     sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
+    signing_note=""
     case "${sign_state}" in
-        ok\|*) signing="gitsign as $(echo "${sign_state}" | cut -d'|' -f2)" ;;
-        *)     signing="NOT CONFIGURED - $(echo "${sign_state}" | cut -d'|' -f2)" ;;
+        ok\|*)
+            signing="gitsign as $(echo "${sign_state}" | cut -d'|' -f2)"
+            if [ "$(echo "${sign_state}" | cut -d'|' -f4)" = "on" ]; then
+                signing="${signing}; commits signed"
+            else
+                # SAY WHAT IS OFF, NOT JUST THAT SOMETHING IS (#36). This row
+                # used to read identically in a repository that signed every
+                # commit and one that had never signed any, which is why three
+                # weeks of unsigned audit commits went unnoticed.
+                signing="${signing}; commit.gpgsign OFF"
+                signing_note="your own 'git commit' will not sign here - the recipes sign explicitly"
+            fi ;;
+        *)  signing="NOT CONFIGURED - $(echo "${sign_state}" | cut -d'|' -f2)" ;;
     esac
 
     echo ""
     echo "  repository   ${repo}"
     echo "  branch       ${branch}"
+    echo "  commit       ${commit_sha}"
+    echo "  message      ${commit_subject}"
     echo "  working tree ${tree}"
     # EVERY REMOTE ANSWER BELOW COMES FROM A CACHE, AND THE CACHE HAS A DATE.
     #
@@ -330,6 +373,7 @@ where:
     echo "  hooks        ${hooks_state#*|}"
     echo "  submodules   ${subs_state#*|}"
     echo "  signing      ${signing}"
+    [ -n "${signing_note}" ] && echo "               ${signing_note}"
     echo "  last fetch   ${fetched}"
     echo ""
 
@@ -547,7 +591,15 @@ _workflow-submodule-state:
         echo "bad|${drifted} of ${count} NOT at the pinned revision: ${names}"
         exit 0
     fi
-    echo "ok|${count} at their pinned revision"
+    # AND WHICH REVISION, because "at their pinned revision" answers the wrong
+    # half of the question. That the checkout matches the pin is the cheap half;
+    # WHICH pin is what a reader is actually after, and it was reached for by
+    # hand often enough - `git submodule status`, then trim the shas - to be
+    # worth printing. Order follows `git submodule status`, which is by path, so
+    # two repositories can be compared by eye.
+    pins="$(echo "${status}" | awk '{printf "%s=>%s, ", $2, substr($1,1,7)}' \
+            | sed 's/, $//')"
+    echo "ok|${count} at their pinned revision (${pins})"
 
 # Check every submodule against its upstream HEAD. NEEDS THE NETWORK.
 #
@@ -748,7 +800,17 @@ commit-on-main reason message:
 
     git switch --quiet -c "${temp}" || exit 1
 
-    if ! git commit -m "{{message}}
+    # SIGNED IF THIS REPOSITORY CAN SIGN - see _workflow-commit for why the
+    # recipe asks rather than leaving it to commit.gpgsign (#36). Inline here
+    # rather than via that helper because this message is multi-line and
+    # interpolates two recipe parameters; routing it through a `just` argument
+    # would be the fragile half of the fix. THIS commit matters more than the
+    # audit commit, not less: it goes straight onto the integration branch.
+    sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
+    sign_flag=""
+    [ "${sign_state%%|*}" = "ok" ] && sign_flag="-S"
+
+    if ! git commit ${sign_flag} -m "{{message}}
 
     Committed directly on {{WORKFLOW_MAIN}} via \`just commit-on-main\`, which
     made this commit on a branch so that no hook had to be disabled (#61).
@@ -759,6 +821,11 @@ commit-on-main reason message:
         echo "    {{WORKFLOW_MAIN}} is still at $(git rev-parse --short "${start}")," \
              "and no temporary branch remains." >&2
         exit 1
+    fi
+
+    if [ -z "${sign_flag}" ]; then
+        echo "--> NOTE: this commit on {{WORKFLOW_MAIN}} is NOT SIGNED - ${sign_state#*|}"
+        echo "    See MERGE-AND-SIGNING-POLICY.md beside this file."
     fi
 
     made="$(git rev-parse HEAD)"
@@ -979,7 +1046,8 @@ new-branch issue:
     # Found by running this in a repository that has no .ai, which is what most
     # future users of this file will look like.
     if [ -n "$(git diff --cached --name-only)" ]; then
-        git commit -q -m "start new dev branch; add audit file"
+        just --justfile "{{justfile()}}" _workflow-commit \
+            "the audit commit" "start new dev branch; add audit file"
     else
         echo "--> Nothing to commit; ${branch} starts at ${base_sha}."
     fi
@@ -997,6 +1065,47 @@ new-branch issue:
     echo "    and published to:${publish_to}"
     echo ""
     just --justfile "{{justfile()}}" where
+
+# Commit, signed if this repository can sign, and SAY SO when it cannot (internal).
+#
+# WHY THE RECIPES ASK FOR `-S` RATHER THAN LEAVING IT TO commit.gpgsign (#36).
+# MERGE-AND-SIGNING-POLICY.md already makes this argument for the landing merge:
+# "whether a merge is signed must not depend on a config key that is easy to
+# unset and invisible when it is". It applies with more force here. The audit
+# commit is the HUMAN-ONLY act the whole Way A gate is built around - the
+# affidavit - and it is the one commit an AI assistant in this estate must not
+# be able to produce. It was the last commit that should have depended on an
+# invisible config bit, and it did:
+#
+#     metal       490b239  UNSIGNED      collection  a82dc14  UNSIGNED
+#     assurance   a7eb311  SIGNED        campfireos  4186a73  UNSIGNED
+#
+# Four branches cut within five minutes, one signature, and no signal anywhere
+# that the other three were different. Every audit commit in `assurance` had
+# been signed since 2026-08-09; none in the other three ever had.
+#
+# NOT A REFUSAL, THOUGH. This file is shipped to repositories whose contributors
+# have no gitsign set up, and a `new-branch` that refuses there would be a guard
+# that blocks work everywhere to enforce a policy that is this estate's, not
+# theirs. So: sign where signing is configured, and where it is not, make the
+# omission LOUD at the moment it happens. Silence was the actual defect.
+# ONE-LINE, LITERAL MESSAGES ONLY. `{{message}}` is interpolated into a
+# double-quoted `-m`, so a caller with a multi-line body or an embedded quote
+# must inline this logic instead - `commit-on-main` does, and says why.
+_workflow-commit branch_hint message:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
+    if [ "${sign_state%%|*}" = "ok" ]; then
+        git commit -q -S -m "{{message}}"
+        exit $?
+    fi
+
+    git commit -q -m "{{message}}" || exit $?
+    echo "--> NOTE: {{branch_hint}} is NOT SIGNED - ${sign_state#*|}"
+    echo "    This commit is the maintainer's own attestation; see"
+    echo "    MERGE-AND-SIGNING-POLICY.md beside this file."
 
 # -----------------------------------------------------------------------------
 # -- publish a branch
