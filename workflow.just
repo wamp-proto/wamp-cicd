@@ -644,6 +644,30 @@ submodules-at-head:
     fi
     echo "--> all submodules at upstream head."
 
+# Print the canonical GitHub repository this checkout belongs to (internal).
+#
+# ONE HOME FOR "WHICH REPOSITORY DO I ASK" (#39). This rule existed inside
+# `just what`, which had it right - the canonical remote is preferred over a
+# fork - while `_workflow-merge-preflight` asked `gh` to work it out. Under the
+# fork topology `gh` picks `origin`, the maintainer's FORK, and a pull request
+# opened against canonical is simply not there. `just land` then refused with
+# "no pull request found", about a pull request that was open and mergeable.
+#
+# `upstream` first, then `origin`, then whatever else carries a github.com URL:
+# the same order `_workflow-base-remote` uses, and for the same reason. Prints
+# nothing when there is no GitHub remote at all, which is a legitimate state -
+# inside an instance there is only the exchange.
+_workflow-forge-repo:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    for remote in upstream origin $(git remote); do
+        url="$(git remote get-url "${remote}" 2>/dev/null)" || continue
+        case "${url}" in *github.com[:/]*) ;; *) continue ;; esac
+        printf '%s' "${url}" | sed -E 's|.*github\.com[:/]||; s|\.git$||; s|/$||'
+        exit 0
+    done
+
 # What is left to do, from the forge (companion to `just where`).
 #
 # `where` answers "where am I in this workflow" and is deliberately OFFLINE - it
@@ -667,13 +691,9 @@ what:
     #!/usr/bin/env bash
     set -uo pipefail
 
-    slug=""
-    for remote in upstream origin $(git remote); do
-        url="$(git remote get-url "${remote}" 2>/dev/null)" || continue
-        case "${url}" in *github.com[:/]*) ;; *) continue ;; esac
-        slug="$(printf '%s' "${url}" | sed -E 's|.*github\.com[:/]||; s|\.git$||; s|/$||')"
-        [ -n "${slug}" ] && break
-    done
+    # See _workflow-forge-repo. The rule used to live here; `land` had its own
+    # answer and got it wrong (#39), so there is now one.
+    slug="$(just --justfile "{{justfile()}}" _workflow-forge-repo)"
 
     if [ -z "${slug}" ]; then
         echo ""
@@ -1283,43 +1303,99 @@ _workflow-merge-preflight branch:
             echo "  installed, so the pull request's state cannot be read." >&2
             exit 1
         fi
+        # WHICH REPOSITORY. Derived, never left to `gh` (#39) - see
+        # _workflow-forge-repo. Without this, `gh` resolves to whichever GitHub
+        # remote it likes, and under the fork topology that is the fork.
+        slug="$(just --justfile "{{justfile()}}" _workflow-forge-repo)"
+        if [ -z "${slug}" ]; then
+            echo "REFUSING: a github.com remote exists but no owner/repo could" >&2
+            echo "  be derived from it, so the pull request cannot be found." >&2
+            git remote -v | sed 's/^/    /' >&2
+            exit 1
+        fi
+
+        # AND `gh` IS NOT ASKED TO RESOLVE THE BRANCH EITHER (#39). Its two
+        # rules point in opposite directions, measured against one open
+        # cross-repository pull request:
+        #
+        #   gh pr view  oberstet:fix_158 --repo R    -> #163   needs owner:
+        #   gh pr list  --head fix_158    --repo R   -> #163   bare ref
+        #   gh pr list  --head oberstet:fix_158 ...  -> []     REJECTS owner:
+        #
+        # A bare name never matches a fork pull request in `pr view`, and the
+        # prefix that fixes `pr view` breaks `pr list`. Depending on either is
+        # depending on a rule that surprised this estate twice in one hour, so
+        # the repository's open pull requests are listed and matched HERE.
+        #
+        # The branch name is interpolated into a jq program, so it is checked
+        # first: this is the one place in this file where a name from the
+        # command line reaches an interpreter.
+        case "${branch}" in
+            *[!A-Za-z0-9._/-]*)
+                echo "REFUSING: refusing to look up a branch whose name has" >&2
+                echo "  characters outside [A-Za-z0-9._/-]: ${branch}" >&2
+                exit 1 ;;
+        esac
+
         # "THERE IS NO PULL REQUEST" AND "I COULD NOT ASK" ARE DIFFERENT
         # ANSWERS, and an earlier version of this reported both as the first.
         # `2>/dev/null || true` turned an auth failure, an ambiguous repository
         # and a rate limit into "no pull request found for X" - a refusal that
         # names the wrong cause and sends the reader to look at the forge.
         pr_err=""
-        if ! pr_json="$(gh pr view "${branch}" \
-                --json number,state,mergeable,reviewDecision 2>&1)"; then
-            pr_err="${pr_json}"
-            pr_json=""
+        if ! rows="$(gh pr list --repo "${slug}" --state open --limit 200 \
+                --json number,state,mergeable,reviewDecision,headRefName,headRepositoryOwner \
+                --jq ".[] | select(.headRefName == \"${branch}\")
+                      | [.number, .state, .mergeable, (.reviewDecision // \"\"),
+                         (.headRepositoryOwner.login // \"?\")] | @tsv" 2>&1)"; then
+            pr_err="${rows}"
+            rows=""
         fi
-        if [ -n "${pr_err}" ] || [ -z "${pr_json}" ]; then
+        if [ -n "${pr_err}" ]; then
             echo "" >&2
-            case "${pr_err}" in
-                *"no pull requests found"*|*"no open pull requests"*|"")
-                    echo "REFUSING: no pull request found for ${branch}." >&2
-                    echo "  The forge hosts the review; landing without one" >&2
-                    echo "  skips it. Open one, then run this again - nothing" >&2
-                    echo "  has moved." >&2
-                    ;;
-                *)
-                    echo "REFUSING: could not ask the forge about ${branch}." >&2
-                    echo "" >&2
-                    echo "  gh said:" >&2
-                    echo "${pr_err}" | sed 's/^/    /' >&2
-                    echo "" >&2
-                    echo "  This is NOT 'there is no pull request'. Until the" >&2
-                    echo "  forge can be asked, landing would skip the review" >&2
-                    echo "  without knowing it." >&2
-                    ;;
-            esac
+            echo "REFUSING: could not ask ${slug} about ${branch}." >&2
+            echo "" >&2
+            echo "  gh said:" >&2
+            echo "${pr_err}" | sed 's/^/    /' >&2
+            echo "" >&2
+            echo "  This is NOT 'there is no pull request'. Until the" >&2
+            echo "  forge can be asked, landing would skip the review" >&2
+            echo "  without knowing it." >&2
             exit 1
         fi
-        pr_number="$(echo "${pr_json}" | sed -n 's/.*"number":\([0-9]*\).*/\1/p')"
-        pr_state="$(echo "${pr_json}" | sed -n 's/.*"state":"\([A-Z]*\)".*/\1/p')"
-        pr_mergeable="$(echo "${pr_json}" | sed -n 's/.*"mergeable":"\([A-Z_]*\)".*/\1/p')"
-        pr_review="$(echo "${pr_json}" | sed -n 's/.*"reviewDecision":"\([A-Z_]*\)".*/\1/p')"
+        rows="$(printf '%s' "${rows}" | sed '/^$/d')"
+        if [ -z "${rows}" ]; then
+            echo "" >&2
+            echo "REFUSING: no open pull request in ${slug} has ${branch} as" >&2
+            echo "  its head branch." >&2
+            echo "  The forge hosts the review; landing without one" >&2
+            echo "  skips it. Open one, then run this again - nothing" >&2
+            echo "  has moved." >&2
+            exit 1
+        fi
+        # MORE THAN ONE IS POSSIBLE, and only visible now that the matching is
+        # done here: two forks can each open a pull request from a branch of
+        # the same name. Picking the first would land against a review that
+        # might belong to the other one.
+        if [ "$(printf '%s\n' "${rows}" | wc -l)" -gt 1 ]; then
+            echo "" >&2
+            echo "REFUSING: ${slug} has more than one open pull request whose" >&2
+            echo "  head branch is ${branch}:" >&2
+            echo "" >&2
+            printf '%s\n' "${rows}" \
+                | awk -F'\t' '{printf "    #%s  from %s  (%s, %s)\n", $1, $5, $2, $3}' >&2
+            echo "" >&2
+            echo "  Which one is being landed is a decision, not a guess." >&2
+            exit 1
+        fi
+        # `cut`, not a heredoc: an unindented terminator would end the recipe
+        # body as far as `just` is concerned, and the parse error it produces
+        # points at a line several below the real cause.
+        pr_number="$(printf '%s' "${rows}" | cut -f1)"
+        pr_state="$(printf '%s' "${rows}" | cut -f2)"
+        pr_mergeable="$(printf '%s' "${rows}" | cut -f3)"
+        pr_review="$(printf '%s' "${rows}" | cut -f4)"
+        pr_owner="$(printf '%s' "${rows}" | cut -f5)"
 
         if [ "${pr_state}" != "OPEN" ]; then
             echo "REFUSING: pull request #${pr_number} is ${pr_state}, not OPEN." >&2
@@ -1333,7 +1409,8 @@ _workflow-merge-preflight branch:
             echo "REFUSING: pull request #${pr_number} has changes requested." >&2
             exit 1
         fi
-        pr_note="pull request #${pr_number}, ${pr_state}, ${pr_mergeable}, review: ${pr_review:-none}"
+        pr_note="pull request ${slug}#${pr_number} from ${pr_owner}, "
+        pr_note="${pr_note}${pr_state}, ${pr_mergeable}, review: ${pr_review:-none}"
     fi
     echo "${pr_note}"
 
