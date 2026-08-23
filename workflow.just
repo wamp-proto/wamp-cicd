@@ -1128,11 +1128,37 @@ _workflow-merge-preflight branch:
             echo "  installed, so the pull request's state cannot be read." >&2
             exit 1
         fi
-        pr_json="$(gh pr view "${branch}" --json number,state,mergeable,reviewDecision 2>/dev/null || true)"
-        if [ -z "${pr_json}" ]; then
+        # "THERE IS NO PULL REQUEST" AND "I COULD NOT ASK" ARE DIFFERENT
+        # ANSWERS, and an earlier version of this reported both as the first.
+        # `2>/dev/null || true` turned an auth failure, an ambiguous repository
+        # and a rate limit into "no pull request found for X" - a refusal that
+        # names the wrong cause and sends the reader to look at the forge.
+        pr_err=""
+        if ! pr_json="$(gh pr view "${branch}" \
+                --json number,state,mergeable,reviewDecision 2>&1)"; then
+            pr_err="${pr_json}"
+            pr_json=""
+        fi
+        if [ -n "${pr_err}" ] || [ -z "${pr_json}" ]; then
             echo "" >&2
-            echo "REFUSING: no pull request found for ${branch}." >&2
-            echo "  The forge hosts the review; landing without one skips it." >&2
+            case "${pr_err}" in
+                *"no pull requests found"*|*"no open pull requests"*|"")
+                    echo "REFUSING: no pull request found for ${branch}." >&2
+                    echo "  The forge hosts the review; landing without one" >&2
+                    echo "  skips it. Open one, then run this again - nothing" >&2
+                    echo "  has moved." >&2
+                    ;;
+                *)
+                    echo "REFUSING: could not ask the forge about ${branch}." >&2
+                    echo "" >&2
+                    echo "  gh said:" >&2
+                    echo "${pr_err}" | sed 's/^/    /' >&2
+                    echo "" >&2
+                    echo "  This is NOT 'there is no pull request'. Until the" >&2
+                    echo "  forge can be asked, landing would skip the review" >&2
+                    echo "  without knowing it." >&2
+                    ;;
+            esac
             exit 1
         fi
         pr_number="$(echo "${pr_json}" | sed -n 's/.*"number":\([0-9]*\).*/\1/p')"
