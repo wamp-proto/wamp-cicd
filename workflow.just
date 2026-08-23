@@ -899,8 +899,91 @@ new-branch issue:
         exit 1
     fi
 
+    # WHERE IT WILL BE PUBLISHED, ASKED NOW RATHER THAN AFTER THE COMMIT (#24).
+    # See _workflow-publish-remotes. This refusal used to fire after the branch
+    # existed and the audit file had been committed onto it, so the recipe's
+    # own failure left work behind that the recipe itself had made.
+    publish_to="$(just --justfile "{{justfile()}}" _workflow-publish-remotes)"
+    if [ -z "${publish_to}" ]; then
+        echo "REFUSING: no remote to publish ${branch} to." >&2
+        exit 1
+    fi
+
     echo "--> Fetching ${base_remote}"
     git fetch --prune "${base_remote}"
+
+    # DOES THIS BRANCH ALREADY EXIST SOMEWHERE ELSE? (#24)
+    #
+    # Work had been started on fix_98 on one machine and published to the
+    # exchange. On the other machine, `just new-branch 98` cut the branch,
+    # generated the audit file, committed it, and only then found out:
+    #
+    #     ! [rejected]  fix_98 -> fix_98 (non-fast-forward)
+    #
+    # What is left behind is a local fix_98 that is NOT the fix_98 everyone else
+    # has - same name, different history, one commit, no work - and the recipe
+    # leaves you STANDING ON IT, so `git branch -d` cannot even be attempted
+    # until you check {{WORKFLOW_MAIN}} out again. It then refuses anyway, and
+    # correctly, because the branch is merged nowhere: recovery is the
+    # destructive `git branch -D`, on a branch a recipe made and named after
+    # the user's own issue. It took two rounds of that before the real branch
+    # could be fetched.
+    #
+    # Nothing was lost, and the reason is that the EXCHANGE refused the push.
+    # A remote rejecting a non-fast-forward is the last thing standing between
+    # this and two divergent histories under one name, and it is not where the
+    # check belongs.
+    #
+    # ls-remote, not the remote-tracking refs: a publish remote is not fetched
+    # by this recipe, so its tracking refs can be older than the branch being
+    # asked about - which is exactly the case that bit.
+    #
+    # AND "IT IS NOT THERE" IS NOT "I COULD NOT ASK". A remote that cannot be
+    # reached answering the same as a branch that does not exist is how a guard
+    # becomes a rubber stamp on the day the network is down. `land` had the same
+    # conflation over `gh pr view` (#32); this is the same distinction, made
+    # before rather than after.
+    existing=""
+    found_remote=""
+    asked=""
+    for remote in ${base_remote} ${publish_to}; do
+        case " ${asked} " in *" ${remote} "*) continue ;; esac
+        asked="${asked} ${remote}"
+        if ! ls_out="$(git ls-remote "${remote}" "refs/heads/${branch}" 2>&1)"; then
+            echo "REFUSING: could not ask ${remote} whether ${branch} exists." >&2
+            echo "" >&2
+            echo "${ls_out}" | sed 's/^/    /' >&2
+            echo "" >&2
+            echo "  Nothing has been created. A remote that could not answer is" >&2
+            echo "  not a remote that answered 'no'." >&2
+            exit 1
+        fi
+        if [ -n "${ls_out}" ]; then
+            existing="${existing}    ${remote}  $(echo "${ls_out}" | awk '{print substr($1,1,7)}')"$'\n'
+            [ -z "${found_remote}" ] && found_remote="${remote}"
+        fi
+    done
+
+    if [ -n "${existing}" ]; then
+        echo "REFUSING: ${branch} already exists on:" >&2
+        echo "" >&2
+        printf '%s' "${existing}" >&2
+        echo "" >&2
+        echo "  Work on issue #{{issue}} was started elsewhere and published." >&2
+        echo "  NOTHING has been created here." >&2
+        echo "" >&2
+        echo "  To continue that work:" >&2
+        echo "" >&2
+        echo "    git fetch ${found_remote}" >&2
+        echo "    git checkout -b ${branch} ${found_remote}/${branch}" >&2
+        echo "" >&2
+        echo "  If it is finished with and you mean to start again, delete it" >&2
+        echo "  on each remote listed above first - deliberately, because on a" >&2
+        echo "  dev branch that may be the only copy:" >&2
+        echo "" >&2
+        echo "    git push <remote> --delete ${branch}" >&2
+        exit 1
+    fi
 
     git checkout {{WORKFLOW_MAIN}}
     git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
@@ -937,11 +1020,7 @@ new-branch issue:
     # Published to the PUBLISH remotes, not to the authority (#18). Cutting
     # from `upstream` is right; pushing a dev branch there is not - it bypasses
     # the fork the pull-request gate is built on. See _workflow-publish-remotes.
-    publish_to="$(just --justfile "{{justfile()}}" _workflow-publish-remotes)"
-    if [ -z "${publish_to}" ]; then
-        echo "REFUSING: no remote to publish ${branch} to." >&2
-        exit 1
-    fi
+    # Resolved above, before anything was created.
     for remote in ${publish_to}; do
         git push -q "${remote}" "${branch}"
     done

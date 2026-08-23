@@ -74,8 +74,10 @@ deploy-github-templates:
     echo "   - PR template: ../.github/pull_request_template.md"
     echo "   Now add & commit the templates in the target repository."
 
-# Run the action unit tests (composite-action shell logic against crafted fixtures).
+# Run the unit tests: composite-action shell logic, and the workflow recipes
+# themselves, both against crafted fixtures rather than against this checkout.
 test:
     #!/usr/bin/env bash
     set -e
     bash tests/test-check-release-fileset.sh
+    bash tests/test-new-branch-collision.sh
