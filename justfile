@@ -84,3 +84,4 @@ test:
     bash tests/test-workflow-signing.sh
     bash tests/test-where-output.sh
     bash tests/test-pr-lookup.sh
+    bash tests/test-signing-scope.sh
