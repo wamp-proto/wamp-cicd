@@ -267,6 +267,43 @@ _workflow-signing-state:
 
     echo "ok|${identity}|${issuer}|${gpgsign}"
 
+# Which of the signing keys are set at GLOBAL scope, and therefore apply to
+# repositories that are under no policy at all (#41).
+#
+# `gpg.format`/`gpg.x509.program` set globally make every repository on the
+# machine gitsign-signed - including ones under no policy - and every signature
+# needs a live OIDC session, so a commit made offline simply fails.
+#
+# `commit.gpgsign` set globally is the sharper one: it selects only WHETHER to
+# sign, while the other two decide HOW. Set wider than the backend, it asks git
+# to sign with a backend those other repositories do not configure, and then a
+# PLAIN `git commit` there - no `-S` typed anywhere - is refused:
+#
+#     error: gpg failed to sign the data:
+#     gpg: skipped "...": No secret key
+#     fatal: failed to write commit object
+#
+# Reported from HERE because it cannot be reported from there. A repository
+# under no policy has no `just` and nothing to run; the machine-wide mistake is
+# visible only from the repositories that are themselves fine. That is also how
+# it stayed hidden - MERGE-AND-SIGNING-POLICY.md recommended the global form
+# until this issue, and the four policy repositories all kept working.
+_workflow-signing-scope:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    offenders=""
+    for key in gpg.format gpg.x509.program; do
+        if [ -n "$(git config --global --get "${key}" 2>/dev/null || true)" ]; then
+            offenders="${offenders}${offenders:+, }${key}"
+        fi
+    done
+    case "$(git config --global --get commit.gpgsign 2>/dev/null || true)" in
+        [Tt]rue|1|[Yy]es|[Oo]n) offenders="${offenders}${offenders:+, }commit.gpgsign" ;;
+    esac
+
+    echo "${offenders}"
+
 # -----------------------------------------------------------------------------
 # -- where am I
 # -----------------------------------------------------------------------------
@@ -321,6 +358,7 @@ where:
 
     # Asked here so it is answered before it is needed, not during a merge.
     sign_state="$(just --justfile "{{justfile()}}" _workflow-signing-state)"
+    scope_offenders="$(just --justfile "{{justfile()}}" _workflow-signing-scope)"
     signing_note=""
     case "${sign_state}" in
         ok\|*)
@@ -374,6 +412,11 @@ where:
     echo "  submodules   ${subs_state#*|}"
     echo "  signing      ${signing}"
     [ -n "${signing_note}" ] && echo "               ${signing_note}"
+    if [ -n "${scope_offenders}" ]; then
+        echo "               GLOBAL SCOPE: ${scope_offenders}"
+        echo "               other repositories on this machine inherit this and cannot"
+        echo "               commit at all ('No secret key'); set these per repository"
+    fi
     echo "  last fetch   ${fetched}"
     echo ""
 

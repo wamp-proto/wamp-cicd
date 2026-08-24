@@ -294,27 +294,58 @@ email on the account. `workflow.oidcIssuer` defaults to
 applies — see `GITSIGN.md`, where the *three* URLs that look like issuers are
 distinguished.
 
-**How a repository signs — set per repository, deliberately:**
+**How a repository signs — set per repository, deliberately, all three
+together:**
 
 ```console
 git config gpg.format x509
 git config gpg.x509.program gitsign
+git config commit.gpgsign true
 ```
 
-Not global, because globally these make *every* commit in *every* repository on
-the machine gitsign-signed — including repositories under no such policy — and
-each signature needs a live OIDC session, so a commit made offline simply fails.
-A repository without them silently falls through to the OpenPGP backend, where
-`git commit -S` fails with *"No secret key"* — which reads like a broken key and
-is not.
+Not global, because globally the first two make *every* commit in *every*
+repository on the machine gitsign-signed — including repositories under no such
+policy — and each signature needs a live OIDC session, so a commit made offline
+simply fails. A repository without them silently falls through to the OpenPGP
+backend, where `git commit -S` fails with *"No secret key"* — which reads like a
+broken key and is not.
 
-`commit.gpgsign true` is optional and orthogonal: every recipe that makes an
-object under this policy passes `-S` itself, so the policy does not depend on
-it. What it still governs is *your own* `git commit`, typed by hand — a pin
-bump, a fixup, a correction — and those are worth signing too, so set it:
+The third key is optional and orthogonal to this policy: every recipe that makes
+an object under it passes `-S` itself, so nothing here depends on
+`commit.gpgsign`. What it governs is *your own* `git commit`, typed by hand — a
+pin bump, a fixup, a correction — and those are worth signing too, which is why
+it belongs in the block.
+
+**But it must never be set at a wider scope than `gpg.format` (#41).** It
+selects only *whether* to sign; the other two decide *how*. Set globally while
+the backend is per repository, it asks git to sign with a backend the other
+repositories do not configure — and then even a plain `git commit`, with no `-S`
+typed anywhere, is refused:
 
 ```console
-git config --global commit.gpgsign true
+$ cd ~/scm/typedefint/typedefint-organize      # under no policy, no gitsign config
+$ git commit -m "sync"
+error: gpg failed to sign the data:
+gpg: skipped "Tobias Oberstein <tobias.oberstein@gmail.com>": No secret key
+fatal: failed to write commit object
+```
+
+Every repository on the machine that is not a policy repository is blocked from
+committing, and the message points at a key problem that does not exist. This
+document recommended exactly that global form until 2026-08-25, and the four
+policy repositories all kept working, which is why it took a commit in an
+unrelated repository to surface it.
+
+So the blast radius of the third key, set globally, is entirely outside what it
+buys. `just where` now names any of the three found at global scope, because the
+repositories that break cannot report it themselves — they have no `just` and
+nothing to run:
+
+```
+  signing      gitsign as <identity>; commits signed
+               GLOBAL SCOPE: commit.gpgsign
+               other repositories on this machine inherit this and cannot
+               commit at all ('No secret key'); set these per repository
 ```
 
 `just where` reports which of the two states a repository is in, because the row
