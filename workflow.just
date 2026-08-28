@@ -73,12 +73,59 @@
 # environment names, no recipe names from a root justfile. Anything
 # that varies per repository is a variable with a default, below.
 
+# -----------------------------------------------------------------------------
+# -- how a repository overrides the variables below (#47)
+# -----------------------------------------------------------------------------
+#
+# TO OVERRIDE, ADD ONE LINE TO YOUR OWN JUSTFILE AND NOTHING ELSE:
+#
+#     import '.cicd/workflow.just'
+#
+#     WORKFLOW_MAIN := 'master'
+#
+# *** DO NOT ALSO WRITE `set allow-duplicate-variables := true` YOURSELF. ***
+# `just` refuses a setting that is defined twice, and the line below already
+# defines it:
+#
+#     error: Setting `allow-duplicate-variables` first set on line 1
+#            is redefined on line 108
+#
+# Both failures below are at PARSE time, so they take down every recipe in the
+# repository, not only the workflow ones.
+#
+# WHY THE `set` IS HERE AND NOT IN EACH IMPORTER
+#
+# It has to be somewhere. Without it `just` refuses the override outright -
+#
+#     error: Variable `WORKFLOW_MAIN` has multiple definitions
+#
+# - in either order, before or after the `import`. Until #47 this file did not
+# say so, so the form it documented did not work and the form that did work was
+# written down nowhere. Nothing could have caught that: no repository in the
+# estate was both on `master` AND onboarded, so the only route to it was
+# someone trying, which is what typedefint-organize#4 did. That is
+# system-and-software-assurance's A15 in this file's own tooling - a capability
+# described and never exercised, for eight months.
+#
+# Here rather than in each importer means overriding costs one line instead of
+# two, and a justfile read on its own is not missing an invisible prerequisite.
+#
+# THE COST, STATED: this permits duplicate variables everywhere, including an
+# accidental redefinition INSIDE this file, which `just` would now accept
+# silently instead of refusing. That is a real loss and it is the price of the
+# capability. Two variables exist here; keep it that way.
+set allow-duplicate-variables := true
+
 # The integration branch these recipes measure against. A variable rather than a
 # literal because it is exactly the kind of thing that differs per repository -
-# several of the older repos in this estate use `master`.
+# several of the older repos in this estate use `master`. Override per the block
+# above. EXERCISED: typedefint-organize is on `master` (typedefint-organize#4).
 WORKFLOW_MAIN := 'main'
 
-# Prefix for dev branch names. `just new-branch 14` produces `fix_14`.
+# Prefix for dev branch names. `just new-branch 14` produces `fix_14`. Override
+# per the block above. NEVER EXERCISED by any repository - a default that
+# happens to suit everyone rather than a setting known to work. If you are the
+# first to change it, say so on #47 so the claim stops being untested.
 WORKFLOW_BRANCH_PREFIX := 'fix_'
 
 # -----------------------------------------------------------------------------
