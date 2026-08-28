@@ -85,3 +85,4 @@ test:
     bash tests/test-where-output.sh
     bash tests/test-pr-lookup.sh
     bash tests/test-signing-scope.sh
+    bash tests/test-variable-override.sh
