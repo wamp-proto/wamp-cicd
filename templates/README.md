@@ -1,154 +1,102 @@
-# GitHub Templates for WAMP Repositories
+# Shared GitHub and community files for WAMP repositories
 
-This directory contains reusable GitHub Issue and Pull Request templates for all WAMP-related repositories.
+This directory is the single source for the files every using repository carries (#16): the
+contribution guide, the pull request template, the AI-assistance disclosure README, a seed for the
+repository's own development notes, and the issue templates.
 
 ## Contents
 
 ```
 templates/
-├── ISSUE_TEMPLATE/
-│   ├── bug_report.md          # Bug report template
-│   ├── feature_request.md     # Feature request template
-│   └── config.yml             # Issue template configuration
-├── pull_request_template.md   # PR template (auto-populated)
-└── README.md                  # This file
+├── CONTRIBUTING.md            # -> CONTRIBUTING.md                   MANAGED  (byte-identical)
+├── pull_request_template.md   # -> .github/pull_request_template.md  MANAGED  (byte-identical)
+├── audit-README.md            # -> .audit/README.md                  MANAGED  (byte-identical)
+├── DEVELOPMENT.md             # -> DEVELOPMENT.md                    SEEDED   (repository-owned)
+├── ISSUE_TEMPLATE/            # -> .github/ISSUE_TEMPLATE/           copied, not yet drift-checked
+│   ├── bug_report.md
+│   ├── feature_request.md
+│   └── config.yml
+└── README.md                  # this file
 ```
 
-## GitHub Template Behavior
+The kinds, handled by [`../scripts/community-files.sh`](../scripts/community-files.sh):
 
-**Important**: GitHub has specific rules for how templates are loaded:
+| Kind | `deploy` | `check` |
+|---|---|---|
+| **MANAGED** | copies the template in | fails unless the copy is byte-identical |
+| **SEEDED** | creates it only if missing, and never overwrites it | fails only if it is missing |
+| **OBSOLETE** (`.github/PULL_REQUEST_TEMPLATE/`) | removes it | fails while it exists |
 
-### Pull Request Templates
+## One workflow, one text: CONTRIBUTING.md vs DEVELOPMENT.md
 
-| Location | Behavior |
-|----------|----------|
-| `.github/pull_request_template.md` | **Auto-populated** when opening a new PR |
-| `.github/PULL_REQUEST_TEMPLATE/` directory | Multiple templates, requires manual URL selection |
+`CONTRIBUTING.md` states the workflow shared by all WAMP projects, and is **identical** everywhere:
+GitHub issue first, red → green tests, and the AI-assistance disclosure. It is deliberately neutral:
+it names no project, says "the default branch" (most repositories use `master`, a few use `main`), and
+defers anything project-specific to `DEVELOPMENT.md`.
 
-**Recommendation**: Use `.github/pull_request_template.md` for a single default template that auto-populates. The `PULL_REQUEST_TEMPLATE/` directory approach is only useful when you need multiple different PR templates that users select manually.
+`DEVELOPMENT.md` belongs to the repository: development setup, running the tests, supported
+platforms and runtimes, and additional agreements or license notes (for example Crossbar.io's
+contributor assignment agreement, or the IETF text of the specification repository). wamp-cicd only
+seeds it; the drift check requires that it exists, because the shared CONTRIBUTING.md links to it.
 
-### Issue Templates
+**Do not customize a MANAGED file in a using repository** - the drift check fails, by design. If the
+shared text is wrong for a repository, either the text should be neutral enough to fit (change it
+here), or the difference belongs in that repository's `DEVELOPMENT.md`.
 
-| Location | Behavior |
-|----------|----------|
-| `.github/ISSUE_TEMPLATE/` directory | Multiple templates shown in issue creation UI |
-| `.github/ISSUE_TEMPLATE/config.yml` | Controls blank issues and adds external links |
-
-Issue templates work differently - the directory approach with multiple `.md` files is the standard way to offer template choices.
+The four places that state the audit-file format must agree: `CONTRIBUTING.md`,
+`pull_request_template.md`, `audit-README.md` here, and the generator in wamp-ai
+(`generate-audit-file`). Change them together.
 
 ## Usage
 
-### Quick Deploy (Recommended)
-
-From a repository that has `wamp-cicd` as a `.cicd` submodule:
+From a repository that has `wamp-cicd` as its `.cicd` submodule:
 
 ```bash
 cd .cicd
-just deploy-github-templates
+just deploy-github-templates   # issue templates + community files; seeds DEVELOPMENT.md if missing
+just check-community-files     # fails on any drift
 ```
 
-This copies all templates to the correct locations in `.github/`.
+In CI, run the repository's own pinned copy from the repository root (checkout with
+`submodules: recursive`):
 
-### Manual Setup
+```yaml
+      - name: Community files in sync with .cicd/templates/
+        run: bash .cicd/scripts/community-files.sh check .
+```
 
-1. **Copy templates to `.github/` directory**:
-   ```bash
-   # From project root
-   mkdir -p .github/ISSUE_TEMPLATE
+The check compares against the templates beside the script, i.e. at the wamp-cicd commit the
+repository pins. A template changed here therefore never fails a repository that has not bumped its
+pin - and the drift shows up exactly when it does, which is when `deploy` should be run.
 
-   # Copy issue templates
-   cp path/to/wamp-cicd/templates/ISSUE_TEMPLATE/* .github/ISSUE_TEMPLATE/
+## Why copies
 
-   # Copy PR template (must be at .github/ root, NOT in subdirectory!)
-   cp path/to/wamp-cicd/templates/pull_request_template.md .github/
-   ```
+GitHub does NOT follow symlinks into submodules, nor read `.github/` content from a submodule:
 
-2. **Customize if needed**:
-   - Update URLs in `config.yml` to point to correct repo
-   - Adjust checklists for project-specific requirements
+- ❌ a `CONTRIBUTING.md` symlinked into `.cicd/` breaks the "contributing guidelines" link on the pull
+  request page and the repository's community profile;
+- ❌ `.github/` content inside a submodule is ignored;
+- ✅ so the files are copied, and the drift check keeps the copies true.
 
-3. **Commit templates**:
-   ```bash
-   git add .github/
-   git commit -m "Add GitHub Issue and PR templates from wamp-cicd"
-   ```
+## GitHub template behavior
 
-## Template Features
+| Location | Behavior |
+|---|---|
+| `.github/pull_request_template.md` | **Auto-populated** when opening a new pull request |
+| `.github/PULL_REQUEST_TEMPLATE/` directory | Multiple templates, manual URL selection only - obsolete here, removed by `deploy` |
+| `.github/ISSUE_TEMPLATE/` directory | Template choices shown in the issue creation UI |
+| `.github/ISSUE_TEMPLATE/config.yml` | Controls blank issues and adds external links |
 
-### Bug Report Template
+## Known issue: the issue templates are not yet shared correctly
 
-- Structured format for bug reports
-- Environment information checklist
-- Minimal reproducible example section
-- Related issues and logs
-
-### Feature Request Template
-
-- Problem statement and proposed solution
-- Use cases and examples
-- Alternatives considered
-- Impact assessment (breaking changes, affected components)
-
-### PR Template
-
-- Comprehensive change description
-- Type of change classification
-- Testing checklist (Python versions, frameworks, OS)
-- Code quality checklist
-- Performance impact section
-- Breaking changes and migration guide
-- **AI Assistance Disclosure** section (per AI_POLICY.md)
-
-### Issue Template Config
-
-- Disables blank issues (enforces structured templates)
-- Provides links to:
-  - GitHub Discussions (for questions)
-  - Documentation (for learning)
-  - WAMP Community (for protocol info)
-
-## Customization Guidelines
-
-### Per-Repository Customization
-
-While these templates are designed to be reusable, some repos may need customization:
-
-1. **Update URLs**:
-   - In `config.yml`, update discussion/docs URLs for the specific repo
-   - In PR template, update any repo-specific links
-
-2. **Adjust Test Checklists**:
-   - Remove irrelevant OS/Python version combinations
-   - Add framework-specific testing steps (e.g., Twisted-only repos)
-
-3. **Add Project-Specific Sections**:
-   - Add security checklist for security-sensitive repos
-   - Add database migration section for repos with persistence
-   - Add protocol compliance section for WAMP client/router repos
-
-### Keep Templates in Sync
-
-- Avoid diverging too much from base templates
-- When making improvements, consider updating base templates in `wamp-cicd`
-- Periodically sync with latest version from `wamp-cicd`
-
-## GitHub Limitations
-
-**Important**: GitHub does NOT follow symlinks or submodules for `.github/` content.
-
-- ❌ Cannot symlink templates from `wamp-cicd` submodule
-- ❌ GitHub ignores `.github/` content in submodules
-- ✅ Must copy templates into each repository's `.github/` directory
-- ✅ Can automate copying via `just deploy-github-templates`
-
-## Maintenance
-
-- Templates are maintained in `wamp-cicd` repository
-- Updates should be made here and then deployed to dependent repos
-- Use `just deploy-github-templates` to sync templates
+The issue templates are copied by `deploy-github-templates` but are not MANAGED, because they are
+not yet neutral: `ISSUE_TEMPLATE/config.yml` points every repository's "Discussions" link at
+autobahn-python's discussions, and `bug_report.md` asks for Python- and Twisted-specific versions.
+Making them MANAGED needs a per-repository rendering step (the repository slug is in
+[`../fleet.toml`](../fleet.toml)) and a language-neutral bug report. Tracked as a follow-up to #16.
 
 ## References
 
-- [GitHub Issue Templates](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository)
-- [GitHub PR Templates](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository)
+- [GitHub issue templates](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository)
+- [GitHub pull request templates](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository)
 - [AI_POLICY.md](https://github.com/wamp-proto/wamp-ai/blob/main/AI_POLICY.md)

@@ -46,33 +46,25 @@ update-repo-submodule:
     git submodule update --remote --merge
     echo "✅ Workspace AI submodule updated. Now add & commit the change (to `.cicd`) in this repository."
 
-# Deploy GitHub templates from `.cicd/templates/` to target repository `.github/` directory (should be run from `.cicd` dir in target repository).
+# Deploy the shared GitHub and community files from `.cicd/templates/` into the target repository: issue templates, the PR template, CONTRIBUTING.md, `.audit/README.md`, and a DEVELOPMENT.md seed if it has none (should be run from `.cicd` dir in target repository).
 deploy-github-templates:
     #!/usr/bin/env bash
     set -e
 
-    # Create .github directories if they don't exist
+    # Issue templates: copied, but NOT drift-checked yet - `config.yml` carries a
+    # Discussions URL that differs per repository, so it cannot be byte-identical.
     mkdir -p ../.github/ISSUE_TEMPLATE
-
-    # Copy Issue templates
     cp -v templates/ISSUE_TEMPLATE/*.md ../.github/ISSUE_TEMPLATE/
     cp -v templates/ISSUE_TEMPLATE/*.yml ../.github/ISSUE_TEMPLATE/
 
-    # Copy PR template to .github/ root (NOT subdirectory!)
-    # GitHub only auto-populates PR template when it's at .github/pull_request_template.md
-    # The PULL_REQUEST_TEMPLATE/ directory approach requires manual URL selection
-    cp -v templates/pull_request_template.md ../.github/
+    # CONTRIBUTING.md, the PR template, `.audit/README.md` (byte-identical, drift-checked),
+    # DEVELOPMENT.md (seeded once, then owned by the repository), and removal of the
+    # obsolete `.github/PULL_REQUEST_TEMPLATE/` directory (#16).
+    bash scripts/community-files.sh deploy ..
 
-    # Remove old PULL_REQUEST_TEMPLATE directory if it exists (no longer needed)
-    if [ -d "../.github/PULL_REQUEST_TEMPLATE" ]; then
-        echo "   Removing obsolete ../.github/PULL_REQUEST_TEMPLATE/ directory"
-        rm -rf ../.github/PULL_REQUEST_TEMPLATE
-    fi
-
-    echo "✅ GitHub templates deployed to ../.github/"
-    echo "   - Issue templates: ../.github/ISSUE_TEMPLATE/"
-    echo "   - PR template: ../.github/pull_request_template.md"
-    echo "   Now add & commit the templates in the target repository."
+# Check the shared community files in the target repository against `.cicd/templates/`, failing on any drift (should be run from `.cicd` dir in target repository; in CI, run `bash .cicd/scripts/community-files.sh check .` from the repository root).
+check-community-files:
+    bash scripts/community-files.sh check ..
 
 # Run the unit tests: composite-action shell logic, and the workflow recipes
 # themselves, both against crafted fixtures rather than against this checkout.
@@ -86,3 +78,5 @@ test:
     bash tests/test-pr-lookup.sh
     bash tests/test-signing-scope.sh
     bash tests/test-variable-override.sh
+    bash tests/test-community-files.sh
+    bash tests/test-fleet.sh
