@@ -1,0 +1,154 @@
+# WAMP fleet manifest - the ONE versioned answer to "which repositories are aligned, and how far".
+#
+# Every repository listed here shares the same contribution workflow via two git submodules:
+#   .ai   -> wamp-proto/wamp-ai    (AI policy, commit hooks, audit-file generator)
+#   .cicd -> wamp-proto/wamp-cicd  (shared CI actions, workflow.just, community-file templates)
+# A rollout pins EVERY repository of a wave to the same .ai and .cicd commits.
+#
+# Read by wamp-fleet-rollout.sh (Python stdlib `tomllib`, no extra dependency).
+#
+# Fields:
+#   name            local checkout directory under ~/work/wamp/
+#   slug            GitHub owner/repo (the canonical, "upstream" repository)
+#   default_branch  integration branch (WORKFLOW_MAIN for workflow.just)
+#   kind            python | javascript | spec | tool | site | cpp | java | tooling-source
+#   wave            1 = current rollout, 2 = next, 0 = deliberately out of scope
+#   notes           why this repository is where it is
+#
+# Verified against GitHub on 2026-09-29.
+
+schema = 1
+
+# -- wave 1: already carry .ai, a justfile, and tracked .audit/; default branch master ----------
+
+[[repo]]
+name = "autobahn-python"
+slug = "crossbario/autobahn-python"
+default_branch = "master"
+kind = "python"
+wave = 1
+notes = "Way-A canary (#1943): already imports .cicd/workflow.just; its .ai hook admits signed merges."
+
+[[repo]]
+name = "crossbar"
+slug = "crossbario/crossbar"
+default_branch = "master"
+kind = "python"
+wave = 1
+notes = "Application (EUPL-1.2); CAA moves to DEVELOPMENT.md. Way-A bootstrap."
+
+[[repo]]
+name = "txaio"
+slug = "crossbario/txaio"
+default_branch = "master"
+kind = "python"
+wave = 1
+notes = "Way-A bootstrap."
+
+[[repo]]
+name = "zlmdb"
+slug = "crossbario/zlmdb"
+default_branch = "master"
+kind = "python"
+wave = 1
+notes = "Way-A bootstrap. Vendored FlatBuffers kept in lock-step with autobahn-python."
+
+[[repo]]
+name = "cfxdb"
+slug = "crossbario/cfxdb"
+default_branch = "master"
+kind = "python"
+wave = 1
+notes = "Way-A bootstrap. Has no root PR template today."
+
+[[repo]]
+name = "wamp-xbr"
+slug = "crossbario/wamp-xbr"
+default_branch = "master"
+kind = "python"
+wave = 1
+notes = "Way-A bootstrap. Python + Solidity/JS."
+
+[[repo]]
+name = "wamp-proto"
+slug = "wamp-proto/wamp-proto"
+default_branch = "master"
+kind = "spec"
+wave = 1
+notes = "Spec + test vectors. IETF-style process (WEPs, mailing list, NOTE WELL) moves verbatim to DEVELOPMENT.md."
+
+[[repo]]
+name = "autobahn-js"
+slug = "crossbario/autobahn-js"
+default_branch = "master"
+kind = "javascript"
+wave = 1
+notes = "Carries its own, different .ai/.cicd pins today; most of its CONTRIBUTING.md is project-specific."
+
+[[repo]]
+name = "autobahn-testsuite"
+slug = "crossbario/autobahn-testsuite"
+default_branch = "master"
+kind = "tool"
+wave = 1
+notes = "Test SEMANTICS are frozen by design (a constant for implementers); the contribution PROCESS is not. Gets .cicd added. The frozen-cases policy goes into DEVELOPMENT.md."
+
+# -- wave 2: need onboarding from zero, or use `main` ----------------------------------------------
+
+[[repo]]
+name = "wamp-site-gen"
+slug = "wamp-proto/wamp-site-gen"
+default_branch = "main"
+kind = "site"
+wave = 2
+notes = "Has .ai only; needs .cicd and a justfile."
+
+[[repo]]
+name = "autobahn-cpp"
+slug = "crossbario/autobahn-cpp"
+default_branch = "master"
+kind = "cpp"
+wave = 2
+notes = "Dormant (last commit 2025-05). No .ai/.cicd/justfile yet."
+
+[[repo]]
+name = "autobahn-java"
+slug = "crossbario/autobahn-java"
+default_branch = "master"
+kind = "java"
+wave = 2
+notes = "Dormant (last commit 2024-11). No .ai/.cicd/justfile yet."
+
+[[repo]]
+name = "wamp-ai"
+slug = "wamp-proto/wamp-ai"
+default_branch = "main"
+kind = "tooling-source"
+wave = 2
+notes = "A source of the shared tooling itself; gets the community files without submodule-including itself."
+
+[[repo]]
+name = "wamp-cicd"
+slug = "wamp-proto/wamp-cicd"
+default_branch = "main"
+kind = "tooling-source"
+wave = 2
+notes = "A source of the shared tooling itself; deploys its own templates to its own root."
+
+# -- wave 0: deliberately out of scope -------------------------------------------------------------
+
+[[repo]]
+name = "sphinxcontrib-soliditydomain"
+slug = "typedefint/sphinxcontrib-soliditydomain"
+default_branch = "master"
+kind = "python"
+wave = 0
+notes = "Vendored into wamp-xbr docs; not an independently contributed project."
+
+[[repo]]
+name = "crossbar-examples"
+slug = "crossbario/crossbar-examples"
+default_branch = "master"
+kind = "python"
+wave = 0
+notes = "Examples collection, inactive since 2023."

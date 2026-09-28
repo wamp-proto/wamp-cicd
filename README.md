@@ -22,8 +22,12 @@ repositories cannot check themselves against.
 [`workflow.just`](workflow.just) implements the first two — `just where`,
 `just new-branch`, `just publish`, `just land`. It implements; they decide.
 
-**These are patterns, not inventories.** Which repositories, hosts and people
-fill their parameters is deployment-specific and is not recorded here.
+**These are patterns, not deployment inventories.** Which hosts, instances and
+people fill their parameters is deployment-specific and is not recorded here.
+The one list kept here is [`fleet.toml`](fleet.toml): the public WAMP project
+repositories that consume this module, their default branches, and which
+rollout wave they belong to. That is project membership, not deployment - it
+names GitHub repositories only, never a host or a person.
 
 ## Benefits of Centralized wamp-ai and wamp-cicd
 
@@ -44,13 +48,40 @@ wamp-proto/wamp-ai          wamp-proto/wamp-cicd
        │ .ai submodule              │ .cicd submodule
        ▼                            ▼
 ┌──────────────────────────────────────────────┐
-│  crossbario/zlmdb                            │
-│  crossbario/autobahn-python                  │
-│  crossbario/crossbar                         │
-│  crossbario/txaio                            │
-│  (future: cfxdb, autobahn-js, etc.)          │
+│  the using repositories, listed in           │
+│  fleet.toml - e.g. crossbario/autobahn-python│
+│  crossbario/crossbar, wamp-proto/wamp-proto  │
 └──────────────────────────────────────────────┘
 ```
+
+## Shared community files
+
+Every using repository carries the same `CONTRIBUTING.md`, pull request
+template and `.audit/README.md`, byte for byte, plus a `DEVELOPMENT.md` of its
+own (#16). The shared contribution workflow - **GitHub issue first**, red →
+green tests, and the AI-assistance disclosure - is written once, in
+[`templates/`](templates/), and everything specific to one repository lives in
+that repository's `DEVELOPMENT.md`.
+
+They are **copies**, because GitHub does not follow a symlink into a submodule;
+a drift check keeps the copies true:
+
+```console
+cd .cicd && just deploy-github-templates   # copy in; seed DEVELOPMENT.md if missing
+cd .cicd && just check-community-files     # fails on any difference
+```
+
+In CI, run the repository's own pinned copy, from the repository root:
+
+```yaml
+      - name: Community files in sync with .cicd/templates/
+        run: bash .cicd/scripts/community-files.sh check .
+```
+
+(The checkout step needs `submodules: recursive`.) The pinned copy is the
+point: the check compares against the templates of the wamp-cicd commit the
+repository pins, so a template changed here never fails a repository that has
+not bumped its pin yet. See [templates/README.md](templates/README.md).
 
 ## Installation
 
