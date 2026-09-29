@@ -21,7 +21,9 @@ ok()   { echo "  ok   $1"; passed=$((passed+1)); }
 fail() { echo "  FAIL $1"; failed=$((failed+1)); }
 command -v just >/dev/null || { echo "FATAL: needs just" >&2; exit 2; }
 
-export HOME="${WORK}/home"; mkdir -p "${HOME}" "${WORK}/bin"
+# Hermetic: CI runners set XDG_CONFIG_HOME, which the config loader prefers over $HOME/.config.
+unset XDG_CONFIG_HOME
+export HOME="${WORK}/home" FLEET_CONFIG_DIR="${WORK}/home/.config/fleet"; mkdir -p "${HOME}" "${WORK}/bin"
 cat > "${WORK}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "${GH_LOG}"

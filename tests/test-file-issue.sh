@@ -44,6 +44,7 @@ chmod +x "${WORK}/bin/gh"
 export PATH="${WORK}/bin:${PATH}" STUB_LOG="${WORK}/gh.log" STUB_EXISTING="${WORK}/existing"
 # A throwaway HOME too: a script version with a HOME-relative default archive (the old one
 # pointed at a fixed directory under ~/work) must never write into the real home under test.
+unset XDG_CONFIG_HOME
 export HOME="${WORK}/home" FLEET_ARCHIVE="${WORK}/filed"
 mkdir -p "${HOME}"
 : > "${STUB_EXISTING}"

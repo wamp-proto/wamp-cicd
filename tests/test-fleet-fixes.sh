@@ -25,7 +25,11 @@ passed=0; failed=0
 ok()   { echo "  ok   $1"; passed=$((passed+1)); }
 fail() { echo "  FAIL $1"; failed=$((failed+1)); }
 
+# Hermetic: CI runners set XDG_CONFIG_HOME (GitHub: /home/runner/.config), which the config loader
+# prefers over $HOME/.config - so the throwaway HOME alone does not isolate the fleet config.
+unset XDG_CONFIG_HOME
 export HOME="${WORK}/home" GIT_CONFIG_GLOBAL="${WORK}/gitconfig" GIT_CONFIG_SYSTEM=/dev/null
+export FLEET_CONFIG_DIR="${HOME}/.config/fleet"
 mkdir -p "${HOME}" "${WORK}/bin" "${WORK}/canned"
 git config --global user.name T; git config --global user.email t@example.invalid
 git config --global init.defaultBranch master
