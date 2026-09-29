@@ -28,7 +28,10 @@ cmd_status() {
     local todo2fa=()
     for org in $(admin_orgs); do
         o="$(gh api "orgs/${org}")"
-        rs="$(gh api "orgs/${org}/rulesets" --jq '[.[] | .name + "(" + .enforcement + ")"] | join(",")' 2>/dev/null || echo "n/a")"
+        # On failure gh prints GitHub's error body on stdout (a 403 on free plans): show a
+        # short reason instead of the raw JSON.
+        rs="$(gh api "orgs/${org}/rulesets" --jq '[.[] | .name + "(" + .enforcement + ")"] | join(",")' 2>/dev/null)" \
+            || rs="n/a ($(printf '%s' "$o" | python3 -c 'import sys,json; print((json.load(sys.stdin).get("plan") or {}).get("name"))') plan)"
         printf '%-16s %-6s %-7s %-7s %-5s %-12s %-12s %s\n' "${org}" \
             "$(printf '%s' "$o" | python3 -c 'import sys,json; print((json.load(sys.stdin).get("plan") or {}).get("name"))')" \
             "$(printf '%s' "$o" | jget public_repos)" "$(printf '%s' "$o" | jget total_private_repos)" \
@@ -45,6 +48,8 @@ cmd_status() {
 }
 
 cmd_settings() {
+    echo "(note: GitHub's API accepts but IGNORES these two fields on most plans; the result is"
+    echo " read back, and where it did not apply the settings page to do it by hand is printed)"
     for org in $(admin_orgs); do
         o="$(gh api "orgs/${org}")"
         vis="$(printf '%s' "$o" | jget members_can_change_repo_visibility)"
@@ -69,12 +74,7 @@ cmd_rulesets() {
         name="$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["name"])' "$f")"
         id="$(printf '%s' "${existing}" | python3 -c 'import sys,json; n=sys.argv[1]; print(next((str(r["id"]) for r in json.load(sys.stdin) if r["name"]==n), ""))' "${name}")"
         if [ -n "${id}" ]; then
-            same="$(gh api "orgs/${org}/rulesets/${id}" | python3 -c '
-import sys,json
-live=json.load(sys.stdin); want=json.load(open(sys.argv[1]))
-k=("enforcement","conditions","rules","bypass_actors","target")
-norm=lambda d: json.dumps({x: d.get(x) for x in k}, sort_keys=True)
-print("yes" if norm(live)==norm(want) else "no")' "$f")"
+            same="$(gh api "orgs/${org}/rulesets/${id}" | python3 "${HERE}/lib/ruleset-matches.py" "$f")"
             if [ "${same}" = yes ]; then echo "${org}: ruleset '${name}' (#${id}) up to date"; continue; fi
             if [ "${GO}" = 1 ]; then gh api -X PUT "orgs/${org}/rulesets/${id}" --input "$f" >/dev/null && echo "${org}: updated '${name}' (#${id})"
             else echo "${org}: [dry-run] update '${name}' (#${id}) - differs"; fi
@@ -88,7 +88,10 @@ print("yes" if norm(live)==norm(want) else "no")' "$f")"
 cmd_transfer() {
     local from="${ARGS[0]:?usage: transfer <from> <to> [--go]}" to="${ARGS[1]:?usage: transfer <from> <to> [--go]}"
     for r in $(gh repo list "${from}" --visibility private --limit 1000 --json name --jq '.[].name'); do
-        if gh api "repos/${to}/${r}" >/dev/null 2>&1; then echo "${from}/${r}: SKIP - ${to}/${r} already exists"; continue; fi
+        # Exists only if GitHub answers with THAT full name: a lookup can resolve to another
+        # repository (redirects), which once reported a false "already exists" for rfminer/rfminer.
+        fn="$(gh api "repos/${to}/${r}" --jq .full_name 2>/dev/null || true)"
+        if [ "${fn,,}" = "${to,,}/${r,,}" ]; then echo "${from}/${r}: SKIP - ${to}/${r} already exists"; continue; fi
         if [ "${GO}" != 1 ]; then echo "${from}/${r}: [dry-run] transfer to ${to}/${r}"; continue; fi
         gh api -X POST "repos/${from}/${r}/transfer" -f new_owner="${to}" >/dev/null \
             && echo "${from}/${r}: transferred to ${to}/${r}" || echo "${from}/${r}: TRANSFER FAILED"

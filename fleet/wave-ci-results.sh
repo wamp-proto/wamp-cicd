@@ -82,6 +82,18 @@ print("; ".join(j["name"] for j in d.get("jobs",[]) if j.get("conclusion") not i
             failed_jobs="${failed_jobs}${wf}: ${jobs}<br>"
             if [ "${RERUN}" = 1 ]; then gh run rerun "${id}" --repo "${slug}" --failed >/dev/null 2>&1 && echo "   re-running failed jobs of ${wf} (${id})"; fi
         fi
+        if [ "${status}" != "completed" ]; then
+            # A run still in progress can already have failed jobs; `--log-failed` only works on
+            # a completed run, so fetch those jobs one by one (their logs are final).
+            while IFS=$'\t' read -r jid jname; do
+                [ -n "${jid}" ] || continue
+                gh run view --repo "${slug}" --job "${jid}" --log > "${d}/run-${id}-job-${jid}.failed.log" 2>&1
+                failed_jobs="${failed_jobs}${wf} (in progress): ${jname}<br>"
+            done < <(py 'import json,sys
+for j in json.load(open(sys.argv[1])).get("jobs",[]):
+    if j.get("status")=="completed" and j.get("conclusion") in ("failure","cancelled","timed_out"):
+        print("%s\t%s" % (j["databaseId"], j["name"]))' "${d}/run-${id}.json" 2>/dev/null)
+        fi
         if [ "${FULL}" = 1 ] && [ "${status}" = "completed" ]; then
             gh run view "${id}" --repo "${slug}" --log > "${d}/run-${id}-${wfs}.log" 2>&1
         fi

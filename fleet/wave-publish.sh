@@ -97,9 +97,11 @@ while IFS=$'\t' read -r name slug main _kind wave; do
 
     sealed="-"
     if ! admits_merge "${d}" "${main}"; then
-        if git -C "${d}" cat-file commit "${b}" 2>/dev/null | grep -q '^gpgsig' \
-           && git -C "${d}" log -1 --format=%s "${b}" | grep -q '^Seal #'; then
-            sealed="sealed"
+        # Any maintainer-signed tip will do - `land` checks exactly this - not only a "Seal #"
+        # commit: a signed commit of real work (e.g. a release key) is as good a tip, and
+        # sealing on top of it again would only restart CI.
+        if git -C "${d}" cat-file commit "${b}" 2>/dev/null | grep -q '^gpgsig'; then
+            sealed="signed"
         elif [ "${SEAL}" = 1 ]; then
             run git -C "${d}" commit -q --allow-empty -S \
                 -m "Seal #${issue} for landing (maintainer-signed tip; Way-A bootstrap fast-forward)"

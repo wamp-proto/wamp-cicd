@@ -60,8 +60,11 @@ print("    classic:   enforce_admins=%s linear_history=%s force_push=%s deletion
     for f in "${FILES[@]}"; do
         rs="$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["name"])' "$f")"
         id="$(printf '%s' "${existing}" | python3 -c 'import sys,json; n=sys.argv[1]; print(next((str(r["id"]) for r in json.load(sys.stdin) if r["name"]==n), ""))' "${rs}")"
+        if [ -n "${id}" ] && [ "$(gh api "repos/${slug}/rulesets/${id}" | python3 "${FLEET_TOOLS_DIR}/lib/ruleset-matches.py" "$f")" = yes ]; then
+            echo "    ruleset '${rs}' (#${id}) up to date"; continue
+        fi
         if [ "${GO}" != 1 ]; then
-            if [ -n "${id}" ]; then echo "    [dry-run] update ruleset '${rs}' (#${id})"; else echo "    [dry-run] create ruleset '${rs}'"; fi
+            if [ -n "${id}" ]; then echo "    [dry-run] update ruleset '${rs}' (#${id}) - differs"; else echo "    [dry-run] create ruleset '${rs}'"; fi
             continue
         fi
         if [ -n "${id}" ]; then
