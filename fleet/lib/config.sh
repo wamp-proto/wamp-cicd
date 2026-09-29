@@ -17,7 +17,8 @@
 #   CICD_URL, AI_URL  the Way-A sources pinned into every repository   [wamp-proto/wamp-{cicd,ai}]
 #   CICD_DIR          a local wamp-cicd clone                   [$FLEET_WORK_DIR/wamp-cicd]
 #   FILE_ISSUE        the issue-filing command                           [file-issue.sh on PATH]
-#   ISSUE_TEMPLATE    the rollout issue template                    [fleet/issue-template.md]
+#   ISSUE_TEMPLATE    the rollout's issue template (per rollout; example:          [none]
+#                     fleet/examples/issue-template-wamp-wave1.md)
 #   FLEET_RULESETS    directory of ruleset JSON files                        [fleet/rulesets]
 
 FLEET_TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,7 +64,7 @@ CICD_URL="${CICD_URL:-https://github.com/wamp-proto/wamp-cicd.git}"
 AI_URL="${AI_URL:-https://github.com/wamp-proto/wamp-ai.git}"
 CICD_DIR="${CICD_DIR:-${FLEET_WORK_DIR}/wamp-cicd}"
 FILE_ISSUE="${FILE_ISSUE:-file-issue.sh}"
-ISSUE_TEMPLATE="${ISSUE_TEMPLATE:-${FLEET_TOOLS_DIR}/issue-template.md}"
+ISSUE_TEMPLATE="${ISSUE_TEMPLATE:-}"
 FLEET_RULESETS="${FLEET_RULESETS:-${FLEET_TOOLS_DIR}/rulesets}"
 for _k in ${_fleet_keys}; do unset "_env_${_k}" "_had_${_k}"; done
 unset _cfgs _c _cfg _k _fleet_keys

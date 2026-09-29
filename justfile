@@ -70,7 +70,8 @@ check-community-files:
 # themselves, both against crafted fixtures rather than against this checkout.
 test:
     #!/usr/bin/env bash
-    set -e
+    # pipefail: the sandboxes are piped through `tail -1`, which must not hide their failure.
+    set -eo pipefail
     bash tests/test-check-release-fileset.sh
     bash tests/test-new-branch-collision.sh
     bash tests/test-workflow-signing.sh
@@ -83,4 +84,5 @@ test:
     bash tests/test-file-issue.sh
     bash tests/test-fleet-config.sh
     bash tests/test-fleet-fixes.sh
-    bash fleet/sandbox-test.sh > /dev/null && echo "fleet sandbox: passed"
+    bash fleet/sandbox-test.sh | tail -1
+    SANDBOX_FLAVOUR=neutral bash fleet/sandbox-test.sh | tail -1

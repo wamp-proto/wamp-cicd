@@ -58,6 +58,12 @@ run() {
     fi
 }
 
+# The PR is titled like the rollout issue it closes (saved from the draft by file-issues).
+pr_title() {  # pr_title <repo> <issue>
+    local t; t="$(cat "$(state_dir)/drafts/$1.title" 2>/dev/null || true)"
+    echo "${t:-Fleet rollout $(current_rollout)} (#$2)"
+}
+
 # -- rollout state -------------------------------------------------------------
 
 current_rollout() {
@@ -217,7 +223,8 @@ cmd_preflight() {
         done
         # Any OTHER remote that carries the default branch becomes a publish target for
         # workflow.just's new-branch/publish - it would push YOUR dev branch into someone
-        # else's fork (crossbar: Skully17, meejah). Blocker until removed.
+        # else's fork (it happened: two contributors' forks as remotes in one clone). Blocker
+        # until removed.
         local extra
         extra="$(g "${r}" remote | grep -vxE "upstream|origin|${EXCHANGE}" | tr '\n' ' ' || true)"
         if [ -n "${extra}" ]; then
@@ -311,7 +318,7 @@ cmd_prune() {
 }
 
 cmd_file_issues() {
-    [ -f "${ISSUE_TEMPLATE}" ] || die "issue template not found: ${ISSUE_TEMPLATE}"
+    [ -f "${ISSUE_TEMPLATE}" ] || die "no issue template for this rollout: set ISSUE_TEMPLATE (example: ${FLEET_TOOLS_DIR}/examples/issue-template-wamp-wave1.md)"
     local r s draft out num cicd ai waya fleet_list cicd_verb
     cicd="$(pin cicd)"; ai="$(pin ai)"
     fleet_list="$(repos | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
@@ -333,6 +340,9 @@ cmd_file_issues() {
             -e "s|@@WAYA_NOTE@@|${waya}|g" -e "s|@@MAIN@@|$(main_of "${r}")|g" \
             -e "s|@@WAVE@@|$(cat "$(state_dir)/wave")|g" -e "s|@@FLEET_LIST@@|${fleet_list}|g" \
             -e "s|@@CICD_VERB@@|${cicd_verb}|g" "${ISSUE_TEMPLATE}" > "${draft}"
+        # Keep the title: file-issue.sh ARCHIVES the draft once filed, and `open-prs` titles each
+        # pull request like its issue.
+        grep -m1 '^Title:' "${draft}" | cut -d: -f2- | sed 's/^ *//' > "${draft%.md}.title" || true
         note "${r}: draft ${draft}  (Repo: ${s})"
         if [ "${GO}" = 1 ]; then
             out="$(cd "$(dirname "${FILE_ISSUE}")" && "${FILE_ISSUE}" "${draft}" 2>&1)" \
@@ -423,11 +433,11 @@ cmd_open_prs() {
         note "${r}: opening PR for ${b}"
         if [ "${GO}" = 1 ]; then
             out="$(gh pr create --repo "${s}" --base "${m}" --head "$(fork_owner "${r}"):${b}" \
-                   --title "Fleet rollout $(current_rollout): shared tooling pins, CONTRIBUTING.md, DEVELOPMENT.md, Way-A (#${n})" \
+                   --title "$(pr_title "${r}" "${n}")" \
                    --body "Closes #${n}
 
-Part of the batched WAMP fleet rollout \`$(current_rollout)\` (same pins in all six repositories):
-\`.cicd\` → wamp-cicd \`$(pin cicd | cut -c1-7)\`, \`.ai\` → wamp-ai \`$(pin ai | cut -c1-7)\`.
+Part of the batched fleet rollout \`$(current_rollout)\` (the same pins in every repository of the wave):
+\`.cicd\` → \`$(pin cicd | cut -c1-7)\`, \`.ai\` → \`$(pin ai | cut -c1-7)\`.
 See #${n} for the change list and acceptance criteria. The AI-assistance disclosure is in \`.audit/\`.")"
             pr="$(echo "${out}" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | tail -1)"
             mf_set "${r}" "${s}" "${n}" "${pr}"
