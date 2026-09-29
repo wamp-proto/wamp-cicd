@@ -45,7 +45,8 @@ out="$(fj fleet-install-tools)"
 grep -q '\[dry-run\] install .*file-issue.sh' <<<"$out" && [ ! -e "${HOME}/.local/bin/file-issue.sh" ] \
     && ok "dry run installs nothing" || fail "dry run: $out"
 out="$(fj fleet-install-tools go)"
-[ -x "${HOME}/.local/bin/file-issue.sh" ] && [ -x "${HOME}/.local/bin/file-comment.sh" ] && ok "go installs both" || fail "go: $out"
+[ -x "${HOME}/.local/bin/file-issue.sh" ] && [ -x "${HOME}/.local/bin/file-comment.sh" ] && [ -x "${HOME}/.local/bin/pr-ci.sh" ] \
+    && ok "go installs file-issue.sh, file-comment.sh, pr-ci.sh" || fail "go: $out"
 cmp -s "${HOME}/.local/bin/file-issue.sh" "${HERE}/../fleet/file-issue.sh" && ok "installed copy is the tool" || fail "copy differs"
 
 echo "== 'go' only as the LAST word"

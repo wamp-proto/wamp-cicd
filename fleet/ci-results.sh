@@ -44,8 +44,10 @@ NAME="${ROLLOUT}-${STAMP}"
 OUT="${FLEET_CI_DIR}/${NAME}"
 mkdir -p "${OUT}"
 
-# one-line python helpers over the saved JSON (no jq dependency)
-py() { python3 -c "$1" "${@:2}"; }
+# The per-PR collection and the upload are shared with pr-ci.sh (the single-PR tool).
+# shellcheck source=pr-ci.sh
+. "${FLEET_TOOLS_DIR}/pr-ci.sh"
+PR_CI_FULL="${FULL}"; PR_CI_RERUN="${RERUN}"
 
 ROWS=()
 while IFS=$'\t' read -r name slug _main _kind wave; do
@@ -57,53 +59,11 @@ while IFS=$'\t' read -r name slug _main _kind wave; do
     echo "== ${name}  PR #${pr:-?}  (${slug})"
     if [ -z "${pr}" ]; then echo "   no PR in the manifest - skipped"; ROWS+=("| ${name} | - | - | no PR | |"); continue; fi
 
-    gh pr view "${pr}" --repo "${slug}" \
-        --json number,url,state,isDraft,headRefName,headRefOid,mergeable,mergeStateStatus,statusCheckRollup \
-        > "${d}/pr.json" 2>"${d}/pr.err" || { echo "   could not read PR"; ROWS+=("| ${name} | #${pr} | - | ERROR reading PR | |"); continue; }
-    [ -s "${d}/pr.err" ] || rm -f "${d}/pr.err"
-    sha="$(py 'import json,sys; print(json.load(open(sys.argv[1]))["headRefOid"])' "${d}/pr.json")"
-    rc=0; gh pr checks "${pr}" --repo "${slug}" > "${d}/checks.txt" 2>&1 || rc=$?
-    case "${rc}" in 0) overall="pass" ;; 8) overall="pending" ;; *) overall="FAIL" ;; esac
-
-    gh run list --repo "${slug}" --commit "${sha}" --limit 100 \
-        --json databaseId,workflowName,name,event,status,conclusion,url,createdAt > "${d}/runs.json" 2>/dev/null \
-        || echo "[]" > "${d}/runs.json"
-
-    failed_jobs=""
-    while IFS=$'\t' read -r id wf status concl; do
-        [ -n "${id}" ] || continue
-        wfs="$(echo "${wf}" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_*$//')"
-        gh run view "${id}" --repo "${slug}" --json jobs,status,conclusion,workflowName,url > "${d}/run-${id}.json" 2>/dev/null
-        if [ "${status}" = "completed" ] && [ "${concl}" != "success" ] && [ "${concl}" != "skipped" ] && [ "${concl}" != "neutral" ]; then
-            gh run view "${id}" --repo "${slug}" --log-failed > "${d}/run-${id}-${wfs}.failed.log" 2>&1
-            jobs="$(py 'import json,sys
-d=json.load(open(sys.argv[1]))
-print("; ".join(j["name"] for j in d.get("jobs",[]) if j.get("conclusion") not in ("success","skipped","neutral",None)))' "${d}/run-${id}.json" 2>/dev/null)"
-            failed_jobs="${failed_jobs}${wf}: ${jobs}<br>"
-            if [ "${RERUN}" = 1 ]; then gh run rerun "${id}" --repo "${slug}" --failed >/dev/null 2>&1 && echo "   re-running failed jobs of ${wf} (${id})"; fi
-        fi
-        if [ "${status}" != "completed" ]; then
-            # A run still in progress can already have failed jobs; `--log-failed` only works on
-            # a completed run, so fetch those jobs one by one (their logs are final).
-            while IFS=$'\t' read -r jid jname; do
-                [ -n "${jid}" ] || continue
-                gh run view --repo "${slug}" --job "${jid}" --log > "${d}/run-${id}-job-${jid}.failed.log" 2>&1
-                failed_jobs="${failed_jobs}${wf} (in progress): ${jname}<br>"
-            done < <(py 'import json,sys
-for j in json.load(open(sys.argv[1])).get("jobs",[]):
-    if j.get("status")=="completed" and j.get("conclusion") in ("failure","cancelled","timed_out"):
-        print("%s\t%s" % (j["databaseId"], j["name"]))' "${d}/run-${id}.json" 2>/dev/null)
-        fi
-        if [ "${FULL}" = 1 ] && [ "${status}" = "completed" ]; then
-            gh run view "${id}" --repo "${slug}" --log > "${d}/run-${id}-${wfs}.log" 2>&1
-        fi
-    done < <(py 'import json,sys
-for r in json.load(open(sys.argv[1])):
-    print("\t".join(str(r.get(k,"")) for k in ("databaseId","workflowName","status","conclusion")))' "${d}/runs.json")
-
-    nruns="$(py 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "${d}/runs.json")"
-    echo "   head ${sha:0:8}: ${overall}, ${nruns} runs"
-    ROWS+=("| ${name} | [#${pr}](https://github.com/${slug}/pull/${pr}) (issue #${issue}) | \`${sha:0:8}\` | ${overall} | ${failed_jobs:-} |")
+    if ! pr_ci_collect "${slug}" "${pr}" "${d}"; then
+        echo "   could not read PR"; ROWS+=("| ${name} | #${pr} | - | ERROR reading PR | |"); continue
+    fi
+    echo "   head ${PR_CI_SHA:0:8}: ${PR_CI_OVERALL}, ${PR_CI_NRUNS} runs"
+    ROWS+=("| ${name} | [#${pr}](https://github.com/${slug}/pull/${pr}) (issue #${issue}) | \`${PR_CI_SHA:0:8}\` | ${PR_CI_OVERALL} | ${PR_CI_FAILED:-} |")
 done < "${STATE}/fleet.tsv"
 
 {
@@ -122,11 +82,5 @@ echo "--> collected into ${OUT}  ($(du -sh "${OUT}" | cut -f1))"
 if [ "${UPLOAD}" = 1 ] && [ -z "${UPLOAD_TO}" ]; then
     echo "--> not uploaded: set UPLOAD_TO=host:path (results are local: ${OUT})"
 elif [ "${UPLOAD}" = 1 ]; then
-    host="${UPLOAD_TO%%:*}"; path="${UPLOAD_TO#*:}"
-    tarball="${FLEET_CI_DIR}/${NAME}.tar.gz"
-    tar -C "${FLEET_CI_DIR}" -czf "${tarball}" "${NAME}"
-    scp -q "${tarball}" "${host}:/tmp/" \
-        && ssh "${host}" "mkdir -p '${path}' && tar -xzf '/tmp/${NAME}.tar.gz' -C '${path}' && rm -f '/tmp/${NAME}.tar.gz'" \
-        && echo "--> uploaded to ${host}:${path}/${NAME}/" \
-        || echo "--> UPLOAD FAILED (results are local: ${OUT})" >&2
+    pr_ci_upload "${FLEET_CI_DIR}" "${NAME}" "${UPLOAD_TO}" || true
 fi

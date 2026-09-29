@@ -33,7 +33,7 @@ fleet-rulesets *args: (_fleet "rulesets.sh" args)
 # Organisations you administer: status | settings [go] | rulesets <org> [go] | transfer <from> <to> [go]
 fleet-org *args: (_fleet "org.sh" args)
 
-# Install file-issue.sh and file-comment.sh (copies) into ~/.local/bin [go]
+# Install file-issue.sh, file-comment.sh and pr-ci.sh (copies) into ~/.local/bin [go]
 fleet-install-tools *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -45,7 +45,7 @@ fleet-install-tools *args:
         esac; shift
     done
     dest="${HOME}/.local/bin"
-    for t in file-issue.sh file-comment.sh; do
+    for t in file-issue.sh file-comment.sh pr-ci.sh; do
         if [ "${go}" = 1 ]; then
             mkdir -p "${dest}" && install -m 755 "{{FLEET_TOOLS}}/${t}" "${dest}/${t}" && echo "installed ${dest}/${t}"
         else

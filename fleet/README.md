@@ -38,8 +38,10 @@ branch carries the new hook.
    `~/.config/fleet/<name>.env`, `chmod 600`, and adjust. Keys and defaults are listed in
    [`lib/config.sh`](lib/config.sh). With one `*.env` it is selected automatically; with several,
    set `FLEET_NAME`. The environment overrides the file (`EXCHANGE=other just fleet-where`).
-2. **Install the issue tools:** `just fleet-install-tools go` copies `file-issue.sh` and
-   `file-comment.sh` into `~/.local/bin` (which should be on `PATH`).
+2. **Install the personal tools:** `just fleet-install-tools go` copies `file-issue.sh`,
+   `file-comment.sh` and `pr-ci.sh` into `~/.local/bin` (which should be on `PATH`). For
+   `pr-ci.sh`, put the upload target in `~/.config/fleet/pr-ci.conf`:
+   `PR_CI_UPLOAD_TO=<ai-host>:<path>`.
 3. **Requirements:** `git`, `just`, `gh` (authenticated; `admin:org` scope for `fleet-org`),
    `python3`, and for signing `gitsign`.
 
@@ -61,7 +63,7 @@ its last word.** A `go` anywhere else is refused.
 | `just fleet-ci-results` | every rollout PR's checks, runs, jobs and failed-job logs (also of runs still in progress); uploaded if `UPLOAD_TO` is set |
 | `just fleet-rulesets [integrity] [go]` | default-branch rulesets per repository from [`rulesets/`](rulesets/), then classic branch protection off |
 | `just fleet-org [status \| settings \| rulesets <org> \| transfer <from> <to>] [go]` | organisations you administer: plan, 2FA, member privileges, org-wide rulesets, repository transfers |
-| `just fleet-install-tools [go]` | `file-issue.sh`, `file-comment.sh` into `~/.local/bin` |
+| `just fleet-install-tools [go]` | `file-issue.sh`, `file-comment.sh`, `pr-ci.sh` into `~/.local/bin` |
 
 ## A rollout, step by step
 
@@ -102,6 +104,16 @@ loudly. A filed draft is archived, never deleted, to
 URL appended: the path says which repository, the name which issue, the last line where. Keep
 drafts, CI results and the archive under your home directory, not `/tmp`: they may contain
 sensitive material, and `/tmp` does not survive a reboot.
+
+## One pull request's CI, for the AI host
+
+`pr-ci.sh <PR URL>` (or `<owner>/<repo>#<n>`) collects one pull request's checks, runs and
+failed-job logs — also of runs still in progress — into
+`~/fleet-ci/<owner>/<repo>/pr<n>-<stamp>/` and uploads them to
+`${PR_CI_UPLOAD_TO}/<owner>/<repo>/`, staged inside the destination, never in the target's `/tmp`.
+It is the way to show an AI assistant without forge credentials a failing CI run of a private
+repository. `--full-logs` adds the full logs, `--rerun-failed` re-runs the failed jobs.
+`just fleet-ci-results` does the same for every pull request of a rollout, with the same code.
 
 ## Branch protection
 
