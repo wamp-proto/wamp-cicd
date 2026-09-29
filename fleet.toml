@@ -63,7 +63,7 @@ notes = "Way-A bootstrap. Has no root PR template today."
 
 [[repo]]
 name = "wamp-xbr"
-slug = "crossbario/wamp-xbr"
+slug = "wamp-proto/wamp-xbr"
 default_branch = "master"
 kind = "python"
 wave = 1
