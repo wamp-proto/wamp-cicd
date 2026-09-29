@@ -1,36 +1,55 @@
 #!/usr/bin/env bash
 # Usage: file-comment.sh <draft.md>
 #
-# Append a comment to an EXISTING GitHub issue from a draft whose header carries
-# `Repo:` and `Issue:` (the issue number), with the body being everything after the
-# first `---`. The sibling of file-issue.sh for the "comment on an existing issue"
-# case (e.g. a scope-update). On success the draft is ARCHIVED to the cross-repo
-# trashcan and its path + sha256 printed (metal#266).
+# Append a comment to an EXISTING GitHub issue from a draft whose header carries `Repo:` and
+# `Issue:` (the issue number), with the body being everything after the first `---`. The
+# sibling of file-issue.sh. Runs where `gh` is authenticated.
 #
-# Runs on the control node (needs `gh` authenticated). Draft header shape:
+# Draft header shape:
 #
-#     Repo:  typedefint/<repo>
+#     Repo:  <owner>/<repo>
 #     Issue: 188
 #
 #     ---
 #     Scope update: ...
+#
+# On success the draft is ARCHIVED (never deleted) to
+#     ${FLEET_ARCHIVE:-~/gh-issues/_filed}/<owner>/<repo>/<UTC stamp>-#<number>-<draft name>
+# with the resulting URL appended, so the archive answers "where did this go?" by its path
+# (repository), its name (number) and its last line (URL). If archiving fails after a
+# successful filing, the script WARNS instead of failing: re-running would file twice.
+
 set -euo pipefail
 
 f="${1:?usage: file-comment.sh <draft.md>}"
-TRASHCAN="${AAIARE_TRASHCAN:-$HOME/work/typedefint/_trashcan}"
+ARCHIVE="${FLEET_ARCHIVE:-$HOME/gh-issues/_filed}"
 
-repo="$(grep -m1 '^Repo:'  "$f" | cut -d: -f2- | xargs)"
-issue="$(grep -m1 '^Issue:' "$f" | cut -d: -f2- | xargs)"
+[ -f "$f" ] || { echo "REFUSING: no such draft: $f" >&2; exit 1; }
+# `|| true`: with `set -euo pipefail`, a header line that is missing would otherwise end
+# the script right here, silently, before the refusal below could say why.
+repo="$(grep -m1 '^Repo:'  "$f" | cut -d: -f2- | xargs || true)"
+issue="$(grep -m1 '^Issue:' "$f" | cut -d: -f2- | xargs || true)"
 body="$(awk 'x{print} /^---$/{x=1}' "$f")"
 [ -n "${repo}" ] && [ -n "${issue}" ] || {
     echo "REFUSING: draft needs '^Repo:' and '^Issue:' header lines." >&2; exit 1; }
+[[ "${repo}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+    echo "REFUSING: 'Repo:' must be a bare owner/name slug, got '${repo}'." >&2; exit 1; }
+[[ "${issue}" =~ ^[0-9]+$ ]] || {
+    echo "REFUSING: 'Issue:' must be an issue number, got '${issue}'." >&2; exit 1; }
 
 echo "--> ${repo}#${issue}: adding a comment..."
-gh issue comment "$issue" --repo "$repo" --body "$body"
+url="$(gh issue comment "$issue" --repo "$repo" --body "$body")"
+echo "${url}"
+number="${issue}"
 
-# Archive the digested draft (never delete); print path + sha256 (digested->landed).
-mkdir -p "${TRASHCAN}"
-archived="${TRASHCAN}/$(date +%Y%m%d-%H%M%S)-$(basename "$f")"
-mv "$f" "${archived}"
-echo "--> archived draft -> ${archived}"
-echo "    sha256: $(openssl sha256 "${archived}" | awk '{print $NF}')"
+# Archive the filed draft (never delete; see the header). A failure here is a WARNING:
+# the forge already has the issue/comment, and a re-run would file it a second time.
+dir="${ARCHIVE}/${repo}"
+archived="${dir}/$(date -u +%Y%m%d-%H%M%S)-#${number}-$(basename "$f")"
+if mkdir -p "${dir}" && mv "$f" "${archived}" \
+   && printf '\n---\nFiled: %s (%s)\n' "${url}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${archived}"; then
+    echo "--> archived draft -> ${archived}"
+    echo "    sha256: $(openssl sha256 "${archived}" | awk '{print $NF}')"
+else
+    echo "WARNING: filed as ${url}, but archiving the draft failed - move $f by hand; do NOT re-run." >&2
+fi

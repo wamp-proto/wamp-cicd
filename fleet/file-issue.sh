@@ -1,32 +1,40 @@
 #!/usr/bin/env bash
 # Usage: file-issue.sh <draft.md>
 #
-# File a GitHub issue from a draft whose header carries `Repo:` and `Title:` lines,
-# with the body being everything after the first `---`. On success the draft is
-# ARCHIVED to the cross-repo trashcan (never deleted) and its path + sha256 printed,
-# so the digested->landed record is kept without a manual `mv` (metal#266).
+# File a GitHub issue from a draft whose header carries `Repo:` and `Title:` lines, with the
+# body being everything after the first `---`. Refuses a duplicate title. Runs where `gh` is
+# authenticated (the maintainer's machine); install with `just fleet-install-tools`.
 #
-# Runs on the control node (needs `gh` authenticated). The estate keeps this file
-# versioned here; the control node uses ~/file-issue.sh as a symlink to it.
+# Draft header shape:
 #
-# Override the trashcan with AAIARE_TRASHCAN. Draft header shape:
-#
-#     Repo:  typedefint/<repo>
-#     Title: [FEATURE] short but complete statement
+#     Repo:  <owner>/<repo>
+#     Title: short but complete statement
 #
 #     ---
 #     ## Why
 #     ...
+#
+# On success the draft is ARCHIVED (never deleted) to
+#     ${FLEET_ARCHIVE:-~/gh-issues/_filed}/<owner>/<repo>/<UTC stamp>-#<number>-<draft name>
+# with the resulting URL appended, so the archive answers "where did this go?" by its path
+# (repository), its name (number) and its last line (URL). If archiving fails after a
+# successful filing, the script WARNS instead of failing: re-running would file twice.
+
 set -euo pipefail
 
 f="${1:?usage: file-issue.sh <draft.md>}"
-TRASHCAN="${AAIARE_TRASHCAN:-$HOME/work/typedefint/_trashcan}"
+ARCHIVE="${FLEET_ARCHIVE:-$HOME/gh-issues/_filed}"
 
-repo="$(grep -m1 '^Repo:'  "$f" | cut -d: -f2- | xargs)"
-title="$(grep -m1 '^Title:' "$f" | cut -d: -f2- | sed 's/^ *//')"
+[ -f "$f" ] || { echo "REFUSING: no such draft: $f" >&2; exit 1; }
+# `|| true`: with `set -euo pipefail`, a header line that is missing would otherwise end
+# the script right here, silently, before the refusal below could say why.
+repo="$(grep -m1 '^Repo:'  "$f" | cut -d: -f2- | xargs || true)"
+title="$(grep -m1 '^Title:' "$f" | cut -d: -f2- | sed 's/^ *//' || true)"
 body="$(awk 'x{print} /^---$/{x=1}' "$f")"
 [ -n "${repo}" ] && [ -n "${title}" ] || {
     echo "REFUSING: draft needs '^Repo:' and '^Title:' header lines." >&2; exit 1; }
+[[ "${repo}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+    echo "REFUSING: 'Repo:' must be a bare owner/name slug, got '${repo}'." >&2; exit 1; }
 
 # REFUSE A DUPLICATE TITLE. Filed #98/#100 and #99/#101 as identical pairs on
 # 2026-08-10 by running this script twice - the forge accepts that happily, and the
@@ -42,12 +50,18 @@ if [ -n "${existing}" ]; then
 fi
 
 echo "--> ${repo}: ${title:0:70}..."
-gh issue create --repo "$repo" --title "$title" --body "$body"
+url="$(gh issue create --repo "$repo" --title "$title" --body "$body")"
+echo "${url}"
+number="${url##*/}"
 
-# Archive the digested draft (never delete): move to the trashcan under a timestamped
-# name so nothing is overwritten, and print path + sha256 to record digested->landed.
-mkdir -p "${TRASHCAN}"
-archived="${TRASHCAN}/$(date +%Y%m%d-%H%M%S)-$(basename "$f")"
-mv "$f" "${archived}"
-echo "--> archived draft -> ${archived}"
-echo "    sha256: $(openssl sha256 "${archived}" | awk '{print $NF}')"
+# Archive the filed draft (never delete; see the header). A failure here is a WARNING:
+# the forge already has the issue/comment, and a re-run would file it a second time.
+dir="${ARCHIVE}/${repo}"
+archived="${dir}/$(date -u +%Y%m%d-%H%M%S)-#${number}-$(basename "$f")"
+if mkdir -p "${dir}" && mv "$f" "${archived}" \
+   && printf '\n---\nFiled: %s (%s)\n' "${url}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${archived}"; then
+    echo "--> archived draft -> ${archived}"
+    echo "    sha256: $(openssl sha256 "${archived}" | awk '{print $NF}')"
+else
+    echo "WARNING: filed as ${url}, but archiving the draft failed - move $f by hand; do NOT re-run." >&2
+fi

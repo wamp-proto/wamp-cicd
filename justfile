@@ -80,3 +80,4 @@ test:
     bash tests/test-variable-override.sh
     bash tests/test-community-files.sh
     bash tests/test-fleet.sh
+    bash tests/test-file-issue.sh
