@@ -89,7 +89,7 @@ cmd_transfer() {
     local from="${ARGS[0]:?usage: transfer <from> <to> [--go]}" to="${ARGS[1]:?usage: transfer <from> <to> [--go]}"
     for r in $(gh repo list "${from}" --visibility private --limit 1000 --json name --jq '.[].name'); do
         # Exists only if GitHub answers with THAT full name: a lookup can resolve to another
-        # repository (redirects), which once reported a false "already exists" for rfminer/rfminer.
+        # repository (redirects), which once reported a false "already exists" for a real transfer.
         fn="$(gh api "repos/${to}/${r}" --jq .full_name 2>/dev/null || true)"
         if [ "${fn,,}" = "${to,,}/${r,,}" ]; then echo "${from}/${r}: SKIP - ${to}/${r} already exists"; continue; fi
         if [ "${GO}" != 1 ]; then echo "${from}/${r}: [dry-run] transfer to ${to}/${r}"; continue; fi

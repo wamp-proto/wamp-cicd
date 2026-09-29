@@ -5,7 +5,7 @@
 #   A. rulesets.sh / org.sh rewrote an unchanged ruleset on every run: GitHub
 #      adds fields of its own, so "same?" must be a SUBSET test (lib/ruleset-matches.py).
 #   B. org.sh status printed GitHub's raw 403 JSON for free-plan orgs.
-#   C. org.sh transfer reported a false "already exists" (rfminer/rfminer): exists
+#   C. org.sh transfer reported a false "already exists" for a real transfer: exists
 #      only if GitHub answers with exactly <to>/<repo> as full_name.
 #   D. ci-results.sh saved no logs for failed jobs of a run still in progress.
 #   E. publish.sh wanted a "Seal #" commit on top of an already SIGNED tip (crossbar's
