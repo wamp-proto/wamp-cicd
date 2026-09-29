@@ -5,7 +5,7 @@
 #   FLEET_NAME=<name>   explicitly, or
 #   the only *.env in FLEET_CONFIG_DIR, if there is exactly one.
 # A variable already set in the environment wins over the file, so a one-off override is
-# `EXCHANGE=other ./wave-publish.sh`. See fleet/examples/*.env for every key.
+# `EXCHANGE=other ./publish.sh`. See fleet/examples/*.env for every key.
 #
 # Keys (defaults in brackets):
 #   FLEET_INVENTORY   path to the fleet's fleet.toml                       [required]

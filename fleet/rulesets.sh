@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# fleet-rulesets.sh - make default-branch protection consistent across the fleet (DEV PC).
+# rulesets.sh - make default-branch protection consistent across the fleet (DEV PC).
 #
-#   ./fleet-rulesets.sh                          dry run: show classic protection + rulesets per repo
-#   ./fleet-rulesets.sh --go                     apply ruleset "master" (from rulesets/master.json),
+#   ./rulesets.sh                          dry run: show classic protection + rulesets per repo
+#   ./rulesets.sh --go                     apply ruleset "master" (from rulesets/master.json),
 #                                                then delete the classic branch protection
-#   ./fleet-rulesets.sh --go --integrity         also apply "master-integrity" (deletion +
+#   ./rulesets.sh --go --integrity         also apply "master-integrity" (deletion +
 #                                                non_fast_forward, NO bypass: nobody force-pushes/deletes)
-#   ./fleet-rulesets.sh --only a,b               restrict to some repositories
+#   ./rulesets.sh --only a,b               restrict to some repositories
 #
 # Repositories come from the current rollout's fleet.tsv (all waves). Per repository:
 #   1. show the classic protection of the default branch and the existing rulesets

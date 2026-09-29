@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# fleet-where.sh - one look at every fleet repository (DEV PC): git settings, state, `just where`.
+# where.sh - one look at every fleet repository (DEV PC): git settings, state, `just where`.
 #
-#   ./fleet-where.sh                 summary table (one row per repository) + problems
-#   ./fleet-where.sh --where         ... plus the full `just where` of every repository
-#   ./fleet-where.sh --wave 1        restrict to one wave of fleet.tsv
-#   ./fleet-where.sh --only a,b      restrict to some repositories
+#   ./where.sh                 summary table (one row per repository) + problems
+#   ./where.sh --where         ... plus the full `just where` of every repository
+#   ./where.sh --wave 1        restrict to one wave of fleet.tsv
+#   ./where.sh --only a,b      restrict to some repositories
 #
 # Read-only: fetches the remotes, changes nothing else. Per repository it checks
 #   branch / clean / default branch == upstream == exchange     (in sync everywhere?)

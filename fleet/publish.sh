@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# wave-publish.sh - bring the rollout's dev branches from the exchange to GitHub (DEV PC).
+# publish.sh - bring the rollout's dev branches from the exchange to GitHub (DEV PC).
 #
-#   ./wave-publish.sh                   dry run: show what would happen
-#   ./wave-publish.sh --go              do it
-#   ./wave-publish.sh --go --seal       ... and first add the maintainer-signed "seal" tip commit
+#   ./publish.sh                   dry run: show what would happen
+#   ./publish.sh --go              do it
+#   ./publish.sh --go --seal       ... and first add the maintainer-signed "seal" tip commit
 #                                       where the landing will be a fast-forward (see below)
-#   ./wave-publish.sh --only a,b        restrict to some repositories
+#   ./publish.sh --only a,b        restrict to some repositories
 #
 # Repositories and issue numbers come from the current rollout ($FLEET_STATE/current: fleet.tsv
 # + manifest.tsv), so the branch of each repository is fix_<issue>. Per repository:

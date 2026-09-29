@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wamp-fleet-rollout.sh - drive ONE batched rollout across one wave of a fleet of repositories.
+# rollout.sh - drive ONE batched rollout across one wave of a fleet of repositories.
 #
 # Runs on the DEV PC (it needs `gh` credentials and gitsign). The AI assistant does the
 # per-repository content work on the AI host between `cut` and `sync`; everything else is here.

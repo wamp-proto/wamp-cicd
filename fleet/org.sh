@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# org-hardening.sh - consistent GitHub ORGANIZATION settings across all orgs you administer (DEV PC).
+# org.sh - consistent GitHub ORGANIZATION settings across all orgs you administer (DEV PC).
 #
-#   ./org-hardening.sh                           status of every org you are an admin of (read-only)
-#   ./org-hardening.sh settings [--go]           members may NOT change repository visibility, NOT delete
+#   ./org.sh                           status of every org you are an admin of (read-only)
+#   ./org.sh settings [--go]           members may NOT change repository visibility, NOT delete
 #                                                repositories (admins only); verified by reading back
-#   ./org-hardening.sh rulesets <org> [--go]     org-wide rulesets from rulesets/org-*.json (all repos,
+#   ./org.sh rulesets <org> [--go]     org-wide rulesets from rulesets/org-*.json (all repos,
 #                                                default branch); create, or update only if different
-#   ./org-hardening.sh transfer <from> <to> [--go]   move every PRIVATE repository of <from> into <to>
+#   ./org.sh transfer <from> <to> [--go]   move every PRIVATE repository of <from> into <to>
 #
 # Needs `gh` with the admin:org scope (gh auth refresh -h github.com -s admin:org).
 # The 2FA requirement cannot be set through the API: `status` lists the orgs without it, with the link.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end sandbox test for wamp-fleet-rollout.sh - no network, no GitHub, no gitsign.
+# End-to-end sandbox test for rollout.sh - no network, no GitHub, no gitsign.
 #
 # Two repos mirror the real situation (names per SANDBOX_FLAVOUR: wamp = autobahn-python/txaio,
 # neutral = alpha/bravo with another exchange-remote and fleet name):
@@ -134,7 +134,7 @@ FILE_ISSUE=${SB}/bin/file-issue.sh
 CFGEOF
 chmod 600 "${SB}/config/${FLEET_ID}.env"
 export FLEET_CONFIG_DIR="${SB}/config"   # the only *.env there: selected without FLEET_NAME
-R="${HERE}/wamp-fleet-rollout.sh"
+R="${HERE}/rollout.sh"
 ONLY=()   # the fleet file now selects the repos (wave 1)
 step() { echo; echo "################ $* ################"; }
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# wave-ci-results.sh - collect the GitHub Actions results of every PR in the current rollout (DEV PC),
+# ci-results.sh - collect the GitHub Actions results of every PR in the current rollout (DEV PC),
 # and ship them to the AI's host for analysis.
 #
-#   ./wave-ci-results.sh                     collect, then upload to $UPLOAD_TO (host:path, e.g. the AI host's ~/fleet-ci/<fleet>)
-#   ./wave-ci-results.sh --no-upload         collect only (local: $FLEET_CI_DIR/<rollout>-<UTC stamp>/)
-#   ./wave-ci-results.sh --full-logs         also download the FULL log of every run (large)
-#   ./wave-ci-results.sh --rerun-failed      after collecting, re-run the failed jobs (flakes)
-#   ./wave-ci-results.sh --only a,b          restrict to some repositories
-#   UPLOAD_TO=host:/path ./wave-ci-results.sh
+#   ./ci-results.sh                     collect, then upload to $UPLOAD_TO (host:path, e.g. the AI host's ~/fleet-ci/<fleet>)
+#   ./ci-results.sh --no-upload         collect only (local: $FLEET_CI_DIR/<rollout>-<UTC stamp>/)
+#   ./ci-results.sh --full-logs         also download the FULL log of every run (large)
+#   ./ci-results.sh --rerun-failed      after collecting, re-run the failed jobs (flakes)
+#   ./ci-results.sh --only a,b          restrict to some repositories
+#   UPLOAD_TO=host:/path ./ci-results.sh
 #
 # PRs come from the current rollout ($FLEET_STATE/current: fleet.tsv + manifest.tsv). Per PR it saves:
 #   pr.json          state, head commit, mergeability, status-check rollup

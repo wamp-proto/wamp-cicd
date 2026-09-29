@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# fleet-hygiene.sh - one-time cleanup of the wave's working copies on the DEV PC, before `cut`.
+# hygiene.sh - one-time cleanup of the wave's working copies on the DEV PC, before `cut`.
 #
-#   ./fleet-hygiene.sh                 dry run: show what would change
-#   ./fleet-hygiene.sh --go            apply
-#   ./fleet-hygiene.sh --only a,b      restrict to some repositories
+#   ./hygiene.sh                 dry run: show what would change
+#   ./hygiene.sh --go            apply
+#   ./hygiene.sh --only a,b      restrict to some repositories
 #
-# Repositories come from the current rollout ($FLEET_STATE/current, same as wamp-fleet-rollout.sh).
+# Repositories come from the current rollout ($FLEET_STATE/current, same as rollout.sh).
 # Per repository:
 #   1. refuse unless the working tree is clean; switch to the default branch if needed
 #   2. BACK UP every local branch except the default branch into one git bundle, and verify it:
@@ -30,7 +30,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised (wamp-fleet-rollout.sh init ...)" >&2; exit 1; }
+[ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised (rollout.sh init ...)" >&2; exit 1; }
 ROLLOUT="$(cat "${FLEET_STATE}/current")"
 STATE="${FLEET_STATE}/${ROLLOUT}"
 WAVE="$(cat "${STATE}/wave")"
@@ -108,5 +108,5 @@ if [ "${GO}" = 1 ]; then
 else
     echo "dry run - nothing changed; re-run with --go to apply."
 fi
-echo "Then: ./wamp-fleet-rollout.sh preflight"
+echo "Then: ./rollout.sh preflight"
 [ "${problems}" = 0 ]
