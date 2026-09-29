@@ -18,6 +18,9 @@ set script-interpreter := ['uv', 'run', '--script']
 # be watched failing.
 import 'workflow.just'
 
+# The fleet tooling (fleet/, #58): `just fleet-where`, `just fleet-rollout <phase> [go]`, ...
+import 'fleet/fleet.just'
+
 # Project base directory = directory of this justfile
 PROJECT_DIR := justfile_directory()
 
@@ -84,5 +87,6 @@ test:
     bash tests/test-file-issue.sh
     bash tests/test-fleet-config.sh
     bash tests/test-fleet-fixes.sh
+    bash tests/test-fleet-recipes.sh
     bash fleet/sandbox-test.sh | tail -1
     SANDBOX_FLAVOUR=neutral bash fleet/sandbox-test.sh | tail -1
