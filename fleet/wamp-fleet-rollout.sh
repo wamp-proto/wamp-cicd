@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wamp-fleet-rollout.sh - drive ONE batched rollout across one wave of the WAMP fleet.
+# wamp-fleet-rollout.sh - drive ONE batched rollout across one wave of a fleet of repositories.
 #
 # Runs on the DEV PC (it needs `gh` credentials and gitsign). The AI assistant does the
 # per-repository content work on the AI host between `cut` and `sync`; everything else is here.
@@ -25,7 +25,7 @@
 #
 # init <name> [--wave N] [--cicd <sha>] [--ai <sha>]
 #   <name>   a label for this rollout, e.g. wave1-2026-09 - NOT a commit. It names the state
-#            directory (~/.wamp-fleet/<name>/) and appears in the issue titles.
+#            directory ($FLEET_STATE/<name>/, default ~/.fleet/<fleet>/<name>/) and appears in the issue titles.
 #   --cicd   wamp-cicd commit to pin in EVERY repository of the wave (default: current main)
 #   --ai     wamp-ai commit to pin in EVERY repository of the wave   (default: current main)
 #   Both are resolved to full SHAs once, at init, and recorded; later moves of main don't matter.
@@ -36,16 +36,10 @@
 
 set -euo pipefail
 
-WAMP_DIR="${WAMP_DIR:-$HOME/work/wamp}"
-FILE_ISSUE="${FILE_ISSUE:-$HOME/file-issue.sh}"
-CICD_DIR="${CICD_DIR:-$WAMP_DIR/wamp-cicd}"
-STATE_ROOT="${STATE_ROOT:-$HOME/.wamp-fleet}"
-ISSUE_TEMPLATE="${ISSUE_TEMPLATE:-$(dirname "$(readlink -f "$0")")/issue-template.md}"
-FLEET="${FLEET:-$(dirname "$(readlink -f "$0")")/fleet.toml}"
-# Name of the git remote for the exchange (the bare repositories shared by AI host and maintainer).
-EXCHANGE="${EXCHANGE:-exchange}"   # name of the git remote that points at the exchange
-CICD_URL="https://github.com/wamp-proto/wamp-cicd.git"
-AI_URL="https://github.com/wamp-proto/wamp-ai.git"
+# Which fleet, and its configuration (inventory, clones, state, exchange remote, ...).
+# shellcheck source=lib/config.sh
+. "$(dirname "$(readlink -f "$0")")/lib/config.sh"
+FILE_ISSUE="$(command -v "${FILE_ISSUE}" 2>/dev/null || echo "${FILE_ISSUE}")"
 
 GO=0
 ONLY=""
@@ -67,10 +61,10 @@ run() {
 # -- rollout state -------------------------------------------------------------
 
 current_rollout() {
-    [ -f "${STATE_ROOT}/current" ] || die "no rollout initialised; run: $0 init <rollout-name>"
-    cat "${STATE_ROOT}/current"
+    [ -f "${FLEET_STATE}/current" ] || die "no rollout initialised; run: $0 init <rollout-name>"
+    cat "${FLEET_STATE}/current"
 }
-state_dir()  { echo "${STATE_ROOT}/$(current_rollout)"; }
+state_dir()  { echo "${FLEET_STATE}/$(current_rollout)"; }
 pin()        { grep -m1 "^$1=" "$(state_dir)/pins" | cut -d= -f2; }
 manifest()   { echo "$(state_dir)/manifest.tsv"; }   # repo  slug  issue  pr
 
@@ -99,7 +93,7 @@ repos() {
         if [ -z "${ONLY}" ] || [[ ",${ONLY}," == *",${r},"* ]]; then echo "${r}"; fi
     done
 }
-rdir()   { echo "${WAMP_DIR}/$1"; }
+rdir()   { echo "${FLEET_WORK_DIR}/$1"; }
 g()      { git -C "$(rdir "$1")" "${@:2}"; }
 branch() { echo "fix_$(mf_get "$1" issue)"; }
 
@@ -114,7 +108,7 @@ fork_owner() { gh_slug "$1" origin | cut -d/ -f1; }
 # run in the directory the justfile lives in. The shim therefore has to live in the repository
 # ROOT (as a repo's own justfile does) - kept out of `git status` via .git/info/exclude, so the
 # clean-tree guards in new-branch/publish/land still see a clean tree.
-SHIM_NAME=".wamp-fleet-shim.just"
+SHIM_NAME=".fleet-shim.just"
 wf() {
     local repo="$1"; shift
     local d excl
@@ -171,21 +165,18 @@ cmd_init() {
     git -C "${CICD_DIR}" cat-file -e "${cicd}:templates/CONTRIBUTING.md" \
         || die "wamp-cicd ${cicd:0:7} has no templates/CONTRIBUTING.md - land wamp-cicd#16 first"
 
-    local d="${STATE_ROOT}/${id}"
+    local d="${FLEET_STATE}/${id}"
     mkdir -p "${d}/drafts"
     printf 'cicd=%s\nai=%s\n' "${cicd}" "${ai}" > "${d}/pins"
     git -C "${CICD_DIR}" show "${cicd}:workflow.just" > "${d}/workflow.just"
 
-    # Freeze the fleet for this rollout. Its eventual home is wamp-cicd (at the pinned commit);
-    # until it lives there, the fleet.toml beside this script is used.
-    if git -C "${CICD_DIR}" cat-file -e "${cicd}:fleet.toml" 2>/dev/null; then
-        git -C "${CICD_DIR}" show "${cicd}:fleet.toml" > "${d}/fleet.toml"
-        note "fleet: wamp-cicd ${cicd:0:7}:fleet.toml"
-    else
-        [ -f "${FLEET}" ] || die "no fleet.toml in wamp-cicd ${cicd:0:7} and none at ${FLEET}"
-        cp "${FLEET}" "${d}/fleet.toml"
-        note "fleet: ${FLEET}"
-    fi
+    # Freeze the fleet for this rollout: a copy of the fleet's inventory (FLEET_INVENTORY, from
+    # the fleet's configuration), and where it came from.
+    [ -f "${FLEET_INVENTORY}" ] || die "fleet '${FLEET_NAME}': no inventory at ${FLEET_INVENTORY}"
+    cp "${FLEET_INVENTORY}" "${d}/fleet.toml"
+    local inv_rev; inv_rev="$(git -C "$(dirname "${FLEET_INVENTORY}")" rev-parse --short HEAD 2>/dev/null || echo "not in git")"
+    printf 'inventory=%s @ %s\n' "${FLEET_INVENTORY}" "${inv_rev}" >> "${d}/pins"
+    note "fleet '${FLEET_NAME}': ${FLEET_INVENTORY} (${inv_rev})"
     python3 - "${d}/fleet.toml" > "${d}/fleet.tsv" <<'PY'
 import sys
 try:
@@ -203,7 +194,7 @@ PY
     [ -n "${members}" ] || die "fleet has no repositories in wave ${wave}"
 
     touch "${d}/manifest.tsv"
-    echo "${id}" > "${STATE_ROOT}/current"
+    echo "${id}" > "${FLEET_STATE}/current"
     note "rollout ${id}: wave ${wave} = ${members}"
     note "pins: .cicd -> ${cicd:0:7}, .ai -> ${ai:0:7}  (state: ${d})"
 }
@@ -212,7 +203,7 @@ cmd_preflight() {
     local blockers=0 r d open contained notc
     command -v gh >/dev/null || die "gh not installed"
     gh auth status >/dev/null 2>&1 || die "gh is not authenticated"
-    [ -x "${FILE_ISSUE}" ] || warn "${FILE_ISSUE} not found or not executable"
+    [ -x "${FILE_ISSUE}" ] || warn "${FILE_ISSUE} not found or not executable (install: just fleet-install-tools)"
 
     for r in $(repos); do
         m="$(main_of "${r}")"
@@ -288,7 +279,7 @@ cmd_preflight() {
     done
 
     echo ""
-    if [ -f "${STATE_ROOT}/current" ]; then
+    if [ -f "${FLEET_STATE}/current" ]; then
         echo "rollout $(current_rollout): .cicd=$(pin cicd | cut -c1-7) .ai=$(pin ai | cut -c1-7)"
     fi
     if [ "${blockers}" -gt 0 ]; then

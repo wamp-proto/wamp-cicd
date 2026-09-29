@@ -3,13 +3,13 @@
 # and ship them to the AI's host for analysis.
 #
 #   ./wave-ci-results.sh                     collect, then upload to $UPLOAD_TO (host:path, e.g. the AI host's ~/fleet-ci/<fleet>)
-#   ./wave-ci-results.sh --no-upload         collect only (local: ~/wamp-fleet-ci/<rollout>-<UTC stamp>/)
+#   ./wave-ci-results.sh --no-upload         collect only (local: $FLEET_CI_DIR/<rollout>-<UTC stamp>/)
 #   ./wave-ci-results.sh --full-logs         also download the FULL log of every run (large)
 #   ./wave-ci-results.sh --rerun-failed      after collecting, re-run the failed jobs (flakes)
 #   ./wave-ci-results.sh --only a,b          restrict to some repositories
 #   UPLOAD_TO=host:/path ./wave-ci-results.sh
 #
-# PRs come from the current rollout (~/.wamp-fleet/current: fleet.tsv + manifest.tsv). Per PR it saves:
+# PRs come from the current rollout ($FLEET_STATE/current: fleet.tsv + manifest.tsv). Per PR it saves:
 #   pr.json          state, head commit, mergeability, status-check rollup
 #   checks.txt       `gh pr checks` table
 #   runs.json        every workflow run on the PR's head commit
@@ -19,10 +19,9 @@
 # and a SUMMARY.md with one row per repository and the failed jobs by name.
 
 set -uo pipefail
+# shellcheck source=lib/config.sh
+. "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 
-STATE_ROOT="${STATE_ROOT:-$HOME/.wamp-fleet}"
-OUT_ROOT="${OUT_ROOT:-$HOME/wamp-fleet-ci}"
-UPLOAD_TO="${UPLOAD_TO:-}"
 UPLOAD=1; FULL=0; RERUN=0; ONLY=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -36,13 +35,13 @@ while [ $# -gt 0 ]; do
 done
 
 command -v gh >/dev/null && gh auth status >/dev/null 2>&1 || { echo "ERROR: gh missing or not authenticated" >&2; exit 1; }
-[ -f "${STATE_ROOT}/current" ] || { echo "ERROR: no rollout initialised" >&2; exit 1; }
-ROLLOUT="$(cat "${STATE_ROOT}/current")"
-STATE="${STATE_ROOT}/${ROLLOUT}"
+[ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised" >&2; exit 1; }
+ROLLOUT="$(cat "${FLEET_STATE}/current")"
+STATE="${FLEET_STATE}/${ROLLOUT}"
 WAVE="$(cat "${STATE}/wave")"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 NAME="${ROLLOUT}-${STAMP}"
-OUT="${OUT_ROOT}/${NAME}"
+OUT="${FLEET_CI_DIR}/${NAME}"
 mkdir -p "${OUT}"
 
 # one-line python helpers over the saved JSON (no jq dependency)
@@ -112,8 +111,8 @@ if [ "${UPLOAD}" = 1 ] && [ -z "${UPLOAD_TO}" ]; then
     echo "--> not uploaded: set UPLOAD_TO=host:path (results are local: ${OUT})"
 elif [ "${UPLOAD}" = 1 ]; then
     host="${UPLOAD_TO%%:*}"; path="${UPLOAD_TO#*:}"
-    tarball="${OUT_ROOT}/${NAME}.tar.gz"
-    tar -C "${OUT_ROOT}" -czf "${tarball}" "${NAME}"
+    tarball="${FLEET_CI_DIR}/${NAME}.tar.gz"
+    tar -C "${FLEET_CI_DIR}" -czf "${tarball}" "${NAME}"
     scp -q "${tarball}" "${host}:/tmp/" \
         && ssh "${host}" "mkdir -p '${path}' && tar -xzf '/tmp/${NAME}.tar.gz' -C '${path}' && rm -f '/tmp/${NAME}.tar.gz'" \
         && echo "--> uploaded to ${host}:${path}/${NAME}/" \

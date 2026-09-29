@@ -10,7 +10,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SB=/tmp/wamp-fleet-sandbox   # throwaway test data; deliberately OUTSIDE the script directory
+export SANDBOX_DIR="${SANDBOX_DIR:-/tmp/fleet-sandbox}"
+SB="${SANDBOX_DIR}"   # throwaway test data; deliberately OUTSIDE the script directory
+# The real wamp-ai justfile (its generate-audit-file recipe is what `cut` runs). In CI: a checkout
+# of wamp-proto/wamp-ai; locally: the sibling clone.
+AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../../wamp-ai/justfile}"
+[ -f "${AI_JUSTFILE}" ] || { echo "FATAL: no wamp-ai justfile at ${AI_JUSTFILE} (set AI_JUSTFILE)" >&2; exit 2; }
 rm -rf "${SB}"; mkdir -p "${SB}"/{bin,up,fork,exch,work,src}
 export GIT_CONFIG_GLOBAL="${SB}/gitconfig"
 git config --global user.name "Sandbox Maintainer"
@@ -21,7 +26,7 @@ ssh-keygen -q -t ed25519 -N '' -f "${SB}/signkey"
 
 # -- wamp-ai source: v1 = old hook (no merge admission), v2 = new hook ------------------------
 A="${SB}/src/wamp-ai"; git init -q "${A}"; mkdir -p "${A}/.githooks"
-cp ~/work/wamp/wamp-ai/justfile "${A}/justfile"
+cp "${AI_JUSTFILE}" "${A}/justfile"
 printf '#!/bin/sh\n# old hook: refuses commits on master\nexit 0\n' > "${A}/.githooks/commit-msg"
 chmod +x "${A}/.githooks/commit-msg"
 git -C "${A}" add -A; git -C "${A}" commit -qm "ai v1"; AI_OLD="$(git -C "${A}" rev-parse HEAD)"
@@ -30,7 +35,7 @@ git -C "${A}" commit -qam "ai v2"; AI_NEW="$(git -C "${A}" rev-parse HEAD)"
 
 # -- wamp-cicd source: real workflow.just + the canonical CONTRIBUTING.md --------------------
 C="${SB}/src/wamp-cicd"; git init -q "${C}"; mkdir -p "${C}/templates"
-cp ~/work/wamp/wamp-cicd/workflow.just "${C}/"
+cp "${HERE}/../workflow.just" "${C}/"
 cp "${HERE}/../templates/CONTRIBUTING.md" "${C}/templates/"
 git -C "${C}" add -A; git -C "${C}" commit -qm "cicd with templates"; CICD="$(git -C "${C}" rev-parse HEAD)"
 git clone -q --bare "${C}" "${SB}/src/wamp-cicd-origin.git"
@@ -68,7 +73,7 @@ case "$1 $2" in
   "api "*)       exit 1 ;;
   "pr list")     exit 0 ;;
   "pr create")   echo "https://github.com/x/y/pull/77" ;;
-  "pr view")     r="$(repo_of "$@")"; git --git-dir="/tmp/wamp-fleet-sandbox/fork/${r}.git" \
+  "pr view")     r="$(repo_of "$@")"; git --git-dir="${SANDBOX_DIR}/fork/${r}.git" \
                    for-each-ref --format='%(objectname)' 'refs/heads/fix_*' | head -1 ;;
   "pr checks")   exit 0 ;;
   *) echo "stub gh: unhandled: $*" >&2; exit 2 ;;
@@ -106,7 +111,18 @@ kind = "cpp"
 wave = 2
 notes = "sandbox: must be ignored by a wave-1 rollout"
 FLEETEOF
-export WAMP_DIR="${SB}/work" FILE_ISSUE="${SB}/bin/file-issue.sh" CICD_DIR="${C}" STATE_ROOT="${SB}/state" FLEET="${SB}/fleet.toml"
+# The fleet's configuration, exactly as a user writes it (fleet/lib/config.sh reads it).
+mkdir -p "${SB}/config"
+cat > "${SB}/config/sbx.env" <<CFGEOF
+FLEET_INVENTORY=${SB}/fleet.toml
+FLEET_WORK_DIR=${SB}/work
+FLEET_STATE=${SB}/state
+EXCHANGE=exchange
+CICD_DIR=${C}
+FILE_ISSUE=${SB}/bin/file-issue.sh
+CFGEOF
+chmod 600 "${SB}/config/sbx.env"
+export FLEET_CONFIG_DIR="${SB}/config"   # the only *.env there: selected without FLEET_NAME
 R="${HERE}/wamp-fleet-rollout.sh"
 ONLY=()   # the fleet file now selects the repos (wave 1)
 step() { echo; echo "################ $* ################"; }

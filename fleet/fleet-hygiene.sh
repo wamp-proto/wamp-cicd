@@ -5,20 +5,20 @@
 #   ./fleet-hygiene.sh --go            apply
 #   ./fleet-hygiene.sh --only a,b      restrict to some repositories
 #
-# Repositories come from the current rollout (~/.wamp-fleet/current, same as wamp-fleet-rollout.sh).
+# Repositories come from the current rollout ($FLEET_STATE/current, same as wamp-fleet-rollout.sh).
 # Per repository:
 #   1. refuse unless the working tree is clean; switch to the default branch if needed
 #   2. BACK UP every local branch except the default branch into one git bundle, and verify it:
-#        ~/.wamp-fleet/<rollout>/backup/<repo>-branches-<date>.bundle
+#        $FLEET_STATE/<rollout>/backup/<repo>-branches-<date>.bundle
 #      (restore any branch:  git fetch <bundle> 'refs/heads/<name>:refs/heads/<name>')
 #   3. delete those local branches (git branch -D) - remote copies are NOT touched
 #   4. signing, as in autobahn-python: gpg.format=x509, gpg.x509.program=gitsign, commit.gpgsign=true
 #   5. hooks: core.hooksPath=.ai/.githooks (initializing the .ai submodule if needed)
 
 set -euo pipefail
+# shellcheck source=lib/config.sh
+. "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 
-WAMP_DIR="${WAMP_DIR:-$HOME/work/wamp}"
-STATE_ROOT="${STATE_ROOT:-$HOME/.wamp-fleet}"
 GO=0
 ONLY=""
 while [ $# -gt 0 ]; do
@@ -30,9 +30,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -f "${STATE_ROOT}/current" ] || { echo "ERROR: no rollout initialised (wamp-fleet-rollout.sh init ...)" >&2; exit 1; }
-ROLLOUT="$(cat "${STATE_ROOT}/current")"
-STATE="${STATE_ROOT}/${ROLLOUT}"
+[ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised (wamp-fleet-rollout.sh init ...)" >&2; exit 1; }
+ROLLOUT="$(cat "${FLEET_STATE}/current")"
+STATE="${FLEET_STATE}/${ROLLOUT}"
 WAVE="$(cat "${STATE}/wave")"
 BACKUP="${STATE}/backup"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -55,7 +55,7 @@ problems=0
 while IFS=$'\t' read -r name _slug main _kind wave; do
     [ "${wave}" = "${WAVE}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
-    d="${WAMP_DIR}/${name}"
+    d="${FLEET_WORK_DIR}/${name}"
     echo ""
     echo "== ${name}  (default branch: ${main})"
     if [ ! -d "${d}/.git" ] && [ ! -f "${d}/.git" ]; then echo "    SKIP: no checkout at ${d}"; problems=$((problems+1)); continue; fi

@@ -16,9 +16,9 @@
 # e.g. enforce_admins.
 
 set -uo pipefail
+# shellcheck source=lib/config.sh
+. "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 
-STATE_ROOT="${STATE_ROOT:-$HOME/.wamp-fleet}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
 GO=0; INTEGRITY=0; ONLY=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -31,9 +31,9 @@ while [ $# -gt 0 ]; do
 done
 
 command -v gh >/dev/null && gh auth status >/dev/null 2>&1 || { echo "ERROR: gh missing or not authenticated" >&2; exit 1; }
-STATE="${STATE_ROOT}/$(cat "${STATE_ROOT}/current")"
-FILES=("${HERE}/rulesets/master.json")
-[ "${INTEGRITY}" = 1 ] && FILES+=("${HERE}/rulesets/master-integrity.json")
+STATE="${FLEET_STATE}/$(cat "${FLEET_STATE}/current")"
+FILES=("${FLEET_RULESETS}/master.json")
+[ "${INTEGRITY}" = 1 ] && FILES+=("${FLEET_RULESETS}/master-integrity.json")
 for f in "${FILES[@]}"; do python3 -m json.tool "$f" >/dev/null || { echo "ERROR: bad JSON $f" >&2; exit 1; }; done
 
 failed=0

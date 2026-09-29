@@ -81,3 +81,5 @@ test:
     bash tests/test-community-files.sh
     bash tests/test-fleet.sh
     bash tests/test-file-issue.sh
+    bash tests/test-fleet-config.sh
+    bash fleet/sandbox-test.sh > /dev/null && echo "fleet sandbox: passed"

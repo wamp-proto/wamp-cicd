@@ -15,10 +15,9 @@
 #   `just where` answers                                         (Way-A recipes available?)
 
 set -uo pipefail
+# shellcheck source=lib/config.sh
+. "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 
-WAMP_DIR="${WAMP_DIR:-$HOME/work/wamp}"
-STATE_ROOT="${STATE_ROOT:-$HOME/.wamp-fleet}"
-EXCHANGE="${EXCHANGE:-exchange}"   # name of the git remote that points at the exchange
 WHERE=0; WAVE=""; ONLY=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -29,7 +28,7 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-STATE="${STATE_ROOT}/$(cat "${STATE_ROOT}/current")"
+STATE="${FLEET_STATE}/$(cat "${FLEET_STATE}/current")"
 
 cfg() { git -C "$1" config --get "$2" 2>/dev/null || echo "-"; }
 PROBLEMS=()
@@ -38,7 +37,7 @@ printf '%-20s %-9s %-5s %-13s %-6s %-7s %-8s %-8s %-7s %-9s %s\n' \
 while IFS=$'\t' read -r name _slug main _kind wave; do
     [ -z "${WAVE}" ] || [ "${wave}" = "${WAVE}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
-    d="${WAMP_DIR}/${name}"
+    d="${FLEET_WORK_DIR}/${name}"
     if [ ! -d "${d}/.git" ]; then printf '%-20s (no clone at %s)\n' "${name}" "${d}"; continue; fi
     for rem in upstream "${EXCHANGE}"; do git -C "${d}" fetch -q "${rem}" 2>/dev/null || true; done
 

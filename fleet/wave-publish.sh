@@ -7,7 +7,7 @@
 #                                       where the landing will be a fast-forward (see below)
 #   ./wave-publish.sh --only a,b        restrict to some repositories
 #
-# Repositories and issue numbers come from the current rollout (~/.wamp-fleet/current: fleet.tsv
+# Repositories and issue numbers come from the current rollout ($FLEET_STATE/current: fleet.tsv
 # + manifest.tsv), so the branch of each repository is fix_<issue>. Per repository:
 #
 #   1. refuse unless the working tree is clean
@@ -23,10 +23,9 @@
 #   6. print the GitHub URL that opens the pull request form (compare view)
 
 set -uo pipefail
+# shellcheck source=lib/config.sh
+. "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 
-WAMP_DIR="${WAMP_DIR:-$HOME/work/wamp}"
-STATE_ROOT="${STATE_ROOT:-$HOME/.wamp-fleet}"
-EXCHANGE="${EXCHANGE:-exchange}"   # name of the git remote that points at the exchange
 GO=0; SEAL=0; ONLY=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -38,8 +37,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -f "${STATE_ROOT}/current" ] || { echo "ERROR: no rollout initialised" >&2; exit 1; }
-STATE="${STATE_ROOT}/$(cat "${STATE_ROOT}/current")"
+[ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised" >&2; exit 1; }
+STATE="${FLEET_STATE}/$(cat "${FLEET_STATE}/current")"
 WAVE="$(cat "${STATE}/wave")"
 
 run() { if [ "${GO}" = 1 ]; then echo "    \$ $*"; "$@"; else echo "    [dry-run] $*"; fi; }
@@ -59,7 +58,7 @@ while IFS=$'\t' read -r name slug main _kind wave; do
     [ "${wave}" = "${WAVE}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
     issue="$(awk -F'\t' -v r="${name}" '$1==r {print $3}' "${STATE}/manifest.tsv" | tail -1)"
-    d="${WAMP_DIR}/${name}"; b="fix_${issue}"
+    d="${FLEET_WORK_DIR}/${name}"; b="fix_${issue}"
     echo ""
     echo "================ ${name}  (${b}, issue #${issue})"
     if [ -z "${issue}" ]; then echo "    SKIP: no issue in the rollout manifest"; failed=1; continue; fi
