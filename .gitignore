@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# fleet/lib/ holds shell code (the Python `lib/` rule above must not swallow it, #58)
+!fleet/lib/
