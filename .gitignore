@@ -208,3 +208,6 @@ __marimo__/
 
 # fleet/lib/ holds shell code (the Python `lib/` rule above must not swallow it, #58)
 !fleet/lib/
+
+# CI checks out dependencies (wamp-ai) here (.github/workflows/test.yml, #58)
+.deps/
