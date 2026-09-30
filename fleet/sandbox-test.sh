@@ -32,6 +32,10 @@ git config --global user.name "Sandbox Maintainer"
 git config --global user.email "sandbox@example.invalid"
 git config --global init.defaultBranch master
 git config --global protocol.file.allow always
+# Remotes look like GitHub, as in real clones (the tools derive owner/repo from remote URLs, and
+# the inventory's slugs must be owner/repo); git rewrites them to the local bare repositories.
+git config --global url."${SB}/up/".insteadOf "https://github.com/sandbox/"
+git config --global url."${SB}/fork/".insteadOf "https://github.com/sandbox-fork/"
 ssh-keygen -q -t ed25519 -N '' -f "${SB}/signkey"
 
 # -- wamp-ai source: v1 = old hook (no merge admission), v2 = new hook ------------------------
@@ -60,8 +64,8 @@ mkrepo() {  # mkrepo <name> <ai-commit> <default-branch>
     git -C "${w}/.ai" checkout -q "${ai}"
     git -C "${w}" add -A; git -C "${w}" commit -qm "initial"
     for kind in up fork exch; do git clone -q --bare "${w}" "${SB}/${kind}/${n}.git"; done
-    git -C "${w}" remote add upstream "${SB}/up/${n}.git"
-    git -C "${w}" remote add origin   "${SB}/fork/${n}.git"
+    git -C "${w}" remote add upstream "https://github.com/sandbox/${n}.git"
+    git -C "${w}" remote add origin   "https://github.com/sandbox-fork/${n}.git"
     git -C "${w}" remote add "${EXCH}" "${SB}/exch/${n}.git"
     for r in upstream origin "${EXCH}"; do git -C "${w}" fetch -q "${r}"; done
     git -C "${w}" config core.hooksPath .ai/.githooks
@@ -101,14 +105,14 @@ cat > "${SB}/fleet.toml" <<FLEETEOF
 schema = 1
 [[repo]]
 name = "${M}"
-slug = "${SB}/up/${M}"
+slug = "sandbox/${M}"
 default_branch = "master"
 kind = "python"
 wave = 1
 notes = "sandbox: hook admits merges"
 [[repo]]
 name = "${B}"
-slug = "${SB}/up/${B}"
+slug = "sandbox/${B}"
 default_branch = "main"
 kind = "python"
 wave = 1

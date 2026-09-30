@@ -6,13 +6,13 @@
 #   pr-ci.sh <owner>/<repo> <n>
 #   options: --full-logs (also every completed run's full log), --rerun-failed, --no-upload
 #
-# For repositories the AI host cannot read itself (private ones): runs where `gh` is
-# authenticated, collects into ${PR_CI_DIR:-~/fleet-ci}/<owner>/<repo>/pr<n>-<UTC stamp>/:
+# For repositories the AI host cannot read itself (private ones). Only for a repository that is in
+# a fleet: the fleet is the one whose inventory lists the repository (or FLEET_NAME), and its
+# configuration decides where the results go - locally ${FLEET_CI_DIR}/<repo>/pr<n>-<UTC stamp>/:
 #   pr.json, checks.txt, runs.json, run-<id>.json, run-<id>-<workflow>.failed.log,
 #   run-<id>-job-<id>.failed.log (failed jobs of runs still in progress), SUMMARY.md
-# and uploads it to ${PR_CI_UPLOAD_TO}/<owner>/<repo>/ (host:path), staged INSIDE that path, never
-# in the target's /tmp. PR_CI_UPLOAD_TO comes from the environment or ~/.config/fleet/pr-ci.conf
-# (one line: PR_CI_UPLOAD_TO=host:/path). Unset: the results stay local.
+# and uploaded to ${UPLOAD_TO}/<repo>/ (host:path), staged INSIDE that path, never in the target's
+# /tmp. UPLOAD_TO unset in the fleet's configuration: the results stay local.
 #
 # Reading only: nothing on the forge changes, except with --rerun-failed.
 # Also a library: fleet/ci-results.sh sources this file for pr_ci_collect and pr_ci_upload.
@@ -79,16 +79,31 @@ pr_ci_upload() {
         || { echo "--> UPLOAD FAILED (results are local: ${parent}/${name})" >&2; return 1; }
 }
 
+# _pr_ci_repo_name <inventory> <slug>  - print the inventory name of <slug>; fail if not listed.
+_pr_ci_repo_name() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+for r in tomllib.load(open(sys.argv[1], "rb")).get("repo", []):
+    if str(r.get("slug", "")).lower() == sys.argv[2].lower():
+        print(r["name"]); sys.exit(0)
+sys.exit(1)
+PY
+}
+
 pr_ci_main() {
     set -uo pipefail
-    local target="" num="" upload=1 slug pr stamp base name out conf
+    local target="" num="" upload=1 slug pr stamp base name out
     PR_CI_FULL=0; PR_CI_RERUN=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --full-logs) PR_CI_FULL=1 ;;
             --rerun-failed) PR_CI_RERUN=1 ;;
             --no-upload) upload=0 ;;
-            -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
+            -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
             -*) echo "unknown option: $1" >&2; return 2 ;;
             *) if [ -z "${target}" ]; then target="$1"; else num="$1"; fi ;;
         esac
@@ -105,16 +120,34 @@ pr_ci_main() {
     fi
     command -v gh >/dev/null && gh auth status >/dev/null 2>&1 || { echo "ERROR: gh missing or not authenticated" >&2; return 1; }
 
-    conf="${XDG_CONFIG_HOME:-$HOME/.config}/fleet/pr-ci.conf"
-    if [ -z "${PR_CI_UPLOAD_TO:-}" ] && [ -f "${conf}" ]; then
-        PR_CI_UPLOAD_TO="$(grep -m1 '^PR_CI_UPLOAD_TO=' "${conf}" | cut -d= -f2- || true)"
+    # Which fleet: FLEET_NAME, or the one whose inventory lists this repository.
+    local tools cdir e n inv matches=() rname
+    tools="$(dirname "$(readlink -f "$0")")"
+    if [ -z "${FLEET_NAME:-}" ]; then
+        cdir="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet}"
+        for e in "${cdir}"/*.env; do
+            [ -f "${e}" ] || continue
+            n="$(basename "${e}" .env)"
+            inv="$( (FLEET_NAME="${n}"; . "${tools}/lib/config.sh" >/dev/null 2>&1 && echo "${FLEET_INVENTORY}") || true)"
+            [ -f "${inv}" ] && _pr_ci_repo_name "${inv}" "${slug}" >/dev/null && matches+=("${n}")
+        done
+        case "${#matches[@]}" in
+            1) FLEET_NAME="${matches[0]}" ;;
+            0) echo "ERROR: ${slug} is in no fleet (no inventory under ${cdir} lists it); pr-ci.sh only handles fleet repositories" >&2; return 1 ;;
+            *) echo "ERROR: ${slug} is in several fleets (${matches[*]}); set FLEET_NAME" >&2; return 1 ;;
+        esac
     fi
+    export FLEET_NAME
+    # shellcheck source=lib/config.sh
+    . "${tools}/lib/config.sh" || return 1
+    rname="$(_pr_ci_repo_name "${FLEET_INVENTORY}" "${slug}")" \
+        || { echo "ERROR: ${slug} is not in fleet '${FLEET_NAME}' (${FLEET_INVENTORY})" >&2; return 1; }
 
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    base="${PR_CI_DIR:-$HOME/fleet-ci}/${slug}"
+    base="${FLEET_CI_DIR}/${rname}"
     name="pr${pr}-${stamp}"
     out="${base}/${name}"
-    echo "== ${slug} PR #${pr}"
+    echo "== ${slug} PR #${pr}  (fleet '${FLEET_NAME}')"
     if ! pr_ci_collect "${slug}" "${pr}" "${out}"; then
         echo "ERROR: could not read ${slug} PR #${pr}: $(cat "${out}/pr.err" 2>/dev/null)" >&2; return 1
     fi
@@ -130,10 +163,10 @@ pr_ci_main() {
     echo "--> collected into ${out}  ($(du -sh "${out}" | cut -f1))"
     if [ "${upload}" = 0 ]; then
         :
-    elif [ -z "${PR_CI_UPLOAD_TO:-}" ]; then
-        echo "--> not uploaded: set PR_CI_UPLOAD_TO=host:path (or put it in ${conf})"
+    elif [ -z "${UPLOAD_TO}" ]; then
+        echo "--> not uploaded: UPLOAD_TO is not set in fleet '${FLEET_NAME}' (results are local)"
     else
-        pr_ci_upload "${base}" "${name}" "${PR_CI_UPLOAD_TO%/}/${slug}"
+        pr_ci_upload "${base}" "${name}" "${UPLOAD_TO%/}/${rname}"
     fi
 }
 

@@ -103,8 +103,9 @@ rdir()   { echo "${FLEET_WORK_DIR}/$1"; }
 g()      { git -C "$(rdir "$1")" "${@:2}"; }
 branch() { echo "fix_$(mf_get "$1" issue)"; }
 
-gh_slug() {  # owner/repo from a remote URL
-    g "$1" remote get-url "$2" 2>/dev/null | sed -E 's|.*github\.com[:/]||; s|\.git$||; s|/$||'
+gh_slug() {  # owner/repo from a remote URL - as CONFIGURED: `git remote get-url` would apply
+    # url.*.insteadOf rewrites first, and the slug is then read off the rewritten URL
+    g "$1" config --get "remote.$2.url" 2>/dev/null | sed -E 's|.*github\.com[:/]||; s|\.git$||; s|/$||'
 }
 slug()       { fleet_col "$1" 2; }
 fork_owner() { gh_slug "$1" origin | cut -d/ -f1; }
@@ -179,6 +180,8 @@ cmd_init() {
     # Freeze the fleet for this rollout: a copy of the fleet's inventory (FLEET_INVENTORY, from
     # the fleet's configuration), and where it came from.
     [ -f "${FLEET_INVENTORY}" ] || die "fleet '${FLEET_NAME}': no inventory at ${FLEET_INVENTORY}"
+    python3 "${FLEET_TOOLS_DIR}/lib/check-inventory.py" "${FLEET_INVENTORY}" --quiet \
+        || die "fleet '${FLEET_NAME}': invalid inventory ${FLEET_INVENTORY} (failed checks above)"
     cp "${FLEET_INVENTORY}" "${d}/fleet.toml"
     local inv_rev; inv_rev="$(git -C "$(dirname "${FLEET_INVENTORY}")" rev-parse --short HEAD 2>/dev/null || echo "not in git")"
     printf 'inventory=%s @ %s\n' "${FLEET_INVENTORY}" "${inv_rev}" >> "${d}/pins"

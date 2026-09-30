@@ -27,7 +27,7 @@ load() {
         done' "${LIB}" 2>&1
 }
 cfg() { printf '%s\n' "${@:2}" > "${WORK}/cfg/$1.env"; chmod 600 "${WORK}/cfg/$1.env"; }
-mkdir -p "${WORK}/cfg" "${WORK}/home"
+mkdir -p "${WORK}/cfg" "${WORK}/home"; chmod 700 "${WORK}/cfg"   # explicit: not the umask's choice
 
 echo "== no configuration at all: says so, and where"
 out="$(load)"; rc=$?
@@ -71,10 +71,35 @@ chmod 602 "${WORK}/cfg/epsilon.env"
 out="$(load FLEET_NAME=epsilon)"; rc=$?
 [ "$rc" -ne 0 ] && ok "world-writable refused" || fail "world-writable: $out"
 
+echo "== a configuration DIRECTORY others can write is refused (the file could be replaced)"
+chmod 775 "${WORK}/cfg"
+out="$(load FLEET_NAME=alpha)"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "is writable by group or others (its files are executed)" <<<"$out" && ok "775 directory refused" || fail "dir: $out"
+chmod 700 "${WORK}/cfg"
+
 echo "== the shipped example parses and names the WAMP inventory"
 cp "${HERE}/../fleet/examples/wamp.env" "${WORK}/cfg/wamp.env"; chmod 600 "${WORK}/cfg/wamp.env"
 out="$(load FLEET_NAME=wamp)"
 grep -qx "FLEET_INVENTORY=${WORK}/home/work/wamp/wamp-cicd/fleet.toml" <<<"$out" && ok "examples/wamp.env" || fail "example: $out"
+
+echo "== fleet-check (fleet/check.sh): the check for generated configurations"
+CHK="${HERE}/../fleet/check.sh"
+chk() { env -i HOME="${WORK}/home" PATH="${PATH}" FLEET_CONFIG_DIR="${WORK}/cfg" FLEET_NAME="$1" bash "${CHK}" 2>&1; }
+rm -f "${WORK}"/cfg/*.env
+printf 'schema = 1\n[[repo]]\nname = "tool"\nslug = "acme/tool"\ndefault_branch = "main"\nkind = "ansible"\nwave = 1\nnotes = "why"\n' > "${WORK}/good.toml"
+printf 'schema = 1\n[[repo]]\nname = "tool"\nslug = "acme/other"\ndefault_branch = "main"\nkind = "ansible"\nwave = 1\nnotes = "why"\n' > "${WORK}/bad.toml"
+cfg ok "FLEET_INVENTORY=${WORK}/good.toml" "UPLOAD_TO=aihost:/srv/ci"
+out="$(chk ok)"; rc=$?
+[ "$rc" -eq 0 ] && grep -q "OK: fleet 'ok' is valid" <<<"$out" && ok "a valid fleet passes" || fail "valid: $out"
+cfg typo "FLEET_INVENTORY=${WORK}/good.toml" "UPLOADTO=aihost:/srv/ci"
+out="$(chk typo)"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "unknown key(s) in the file: UPLOADTO" <<<"$out" && ok "an unknown key (typo) fails" || fail "typo: $out"
+cfg badinv "FLEET_INVENTORY=${WORK}/bad.toml"
+out="$(chk badinv)"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "slug ends in the name" <<<"$out" && ok "an invalid inventory fails, naming the check" || fail "bad inventory: $out"
+cfg badup "FLEET_INVENTORY=${WORK}/good.toml" "UPLOAD_TO=/just/a/path"
+out="$(chk badup)"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "UPLOAD_TO is not host:path" <<<"$out" && ok "UPLOAD_TO without a host fails" || fail "upload: $out"
 
 echo ""
 echo "${passed} passed, ${failed} failed"

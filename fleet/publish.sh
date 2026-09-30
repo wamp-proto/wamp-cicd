@@ -113,7 +113,7 @@ while IFS=$'\t' read -r name slug main _kind wave; do
     fi
 
     run git -C "${d}" push -q -u origin "${b}"
-    owner="$(git -C "${d}" remote get-url origin | sed -E 's|.*github\.com[:/]||; s|/.*||')"
+    owner="$(git -C "${d}" config --get remote.origin.url | sed -E 's|.*github\.com[:/]||; s|/.*||')"
     pr="$(awk -F'\t' -v r="${name}" '$1==r {print $4}' "${STATE}/manifest.tsv" | tail -1)"
     if [ -n "${pr}" ]; then
         url="https://github.com/${slug}/pull/${pr}"         # PR exists: CI re-runs on this push

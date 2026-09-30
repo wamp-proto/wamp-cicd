@@ -12,6 +12,9 @@
 
 FLEET_TOOLS := source_directory()
 
+# Is the fleet's configuration valid? File, keys, permissions, inventory (read-only; the check for generated configurations)
+fleet-check *args: (_fleet "check.sh" args)
+
 # Health table across the fleet: sync, hooks, signing, pins, drift, `just where` (read-only; `full` adds every `just where`)
 fleet-where *args: (_fleet "where.sh" args)
 
@@ -33,7 +36,7 @@ fleet-rulesets *args: (_fleet "rulesets.sh" args)
 # Organisations you administer: status | settings [go] | rulesets <org> [go] | transfer <from> <to> [go]
 fleet-org *args: (_fleet "org.sh" args)
 
-# Install file-issue.sh, file-comment.sh and pr-ci.sh (copies) into ~/.local/bin [go]
+# Install file-issue.sh, file-comment.sh (copies) and pr-ci.sh (wrapper) into ~/.local/bin [go]
 fleet-install-tools *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -45,13 +48,23 @@ fleet-install-tools *args:
         esac; shift
     done
     dest="${HOME}/.local/bin"
-    for t in file-issue.sh file-comment.sh pr-ci.sh; do
+    # file-issue.sh, file-comment.sh: self-contained, installed as copies.
+    for t in file-issue.sh file-comment.sh; do
         if [ "${go}" = 1 ]; then
             mkdir -p "${dest}" && install -m 755 "{{FLEET_TOOLS}}/${t}" "${dest}/${t}" && echo "installed ${dest}/${t}"
         else
             echo "[dry-run] install {{FLEET_TOOLS}}/${t} -> ${dest}/${t}"
         fi
     done
+    # pr-ci.sh needs the fleet configuration code beside it: installed as a wrapper that runs it
+    # from this checkout (so it follows the checkout; re-install after moving it).
+    if [ "${go}" = 1 ]; then
+        mkdir -p "${dest}"
+        printf '#!/usr/bin/env bash\n# Installed by `just fleet-install-tools go`: runs pr-ci.sh from the wamp-cicd checkout.\nexec bash %q "$@"\n' \
+            "{{FLEET_TOOLS}}/pr-ci.sh" > "${dest}/pr-ci.sh" && chmod 755 "${dest}/pr-ci.sh" && echo "installed ${dest}/pr-ci.sh (-> {{FLEET_TOOLS}}/pr-ci.sh)"
+    else
+        echo "[dry-run] install ${dest}/pr-ci.sh (wrapper -> {{FLEET_TOOLS}}/pr-ci.sh)"
+    fi
     [ "${go}" = 1 ] || echo "(dry run - nothing changed; add 'go' as the last word)"
     case ":${PATH}:" in *":${dest}:"*) ;; *) echo "note: ${dest} is not on your PATH" ;; esac
 

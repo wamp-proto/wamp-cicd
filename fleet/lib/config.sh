@@ -24,7 +24,7 @@
 FLEET_TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FLEET_CONFIG_DIR="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet}"
 
-_fleet_keys="FLEET_INVENTORY FLEET_WORK_DIR FLEET_STATE FLEET_CI_DIR EXCHANGE UPLOAD_TO CICD_URL AI_URL CICD_DIR FILE_ISSUE ISSUE_TEMPLATE FLEET_RULESETS"
+FLEET_CONFIG_KEYS="FLEET_INVENTORY FLEET_WORK_DIR FLEET_STATE FLEET_CI_DIR EXCHANGE UPLOAD_TO CICD_URL AI_URL CICD_DIR FILE_ISSUE ISSUE_TEMPLATE FLEET_RULESETS"
 
 if [ -z "${FLEET_NAME:-}" ]; then
     _cfgs=("${FLEET_CONFIG_DIR}"/*.env)
@@ -39,12 +39,17 @@ if [ -z "${FLEET_NAME:-}" ]; then
 fi
 _cfg="${FLEET_CONFIG_DIR}/${FLEET_NAME}.env"
 [ -f "${_cfg}" ] || { echo "ERROR: fleet '${FLEET_NAME}': no ${_cfg} (see ${FLEET_TOOLS_DIR}/examples/)" >&2; exit 1; }
-# The file is executed: refuse one that others can write.
+# The file is executed: refuse one that others can write - or that others can REPLACE, through a
+# directory they can write (a 600 file in a 775 directory can be swapped for another file).
 case "$(stat -c %a "${_cfg}")" in
     *[2367]?|*?[2367]) echo "ERROR: ${_cfg} is writable by group or others; chmod 600 it" >&2; exit 1 ;;
 esac
+case "$(stat -c %a "${FLEET_CONFIG_DIR}")" in
+    *[2367]?|*?[2367]) echo "ERROR: ${FLEET_CONFIG_DIR} is writable by group or others (its files are executed); chmod 700 it" >&2; exit 1 ;;
+esac
 
 # Source the file, then put back whatever the environment had set (the environment wins).
+_fleet_keys="${FLEET_CONFIG_KEYS}"
 for _k in ${_fleet_keys}; do
     if [ -n "${!_k+x}" ]; then eval "_env_${_k}=\${${_k}}"; eval "_had_${_k}=1"; fi
 done

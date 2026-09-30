@@ -47,7 +47,10 @@ grep -q '\[dry-run\] install .*file-issue.sh' <<<"$out" && [ ! -e "${HOME}/.loca
 out="$(fj fleet-install-tools go)"
 [ -x "${HOME}/.local/bin/file-issue.sh" ] && [ -x "${HOME}/.local/bin/file-comment.sh" ] && [ -x "${HOME}/.local/bin/pr-ci.sh" ] \
     && ok "go installs file-issue.sh, file-comment.sh, pr-ci.sh" || fail "go: $out"
-cmp -s "${HOME}/.local/bin/file-issue.sh" "${HERE}/../fleet/file-issue.sh" && ok "installed copy is the tool" || fail "copy differs"
+cmp -s "${HOME}/.local/bin/file-issue.sh" "${HERE}/../fleet/file-issue.sh" && ok "file-issue.sh: a copy of the tool" || fail "copy differs"
+grep -q "exec bash .*/fleet/pr-ci.sh" "${HOME}/.local/bin/pr-ci.sh" && ok "pr-ci.sh: a wrapper running the checkout's script" || fail "pr-ci wrapper: $(cat "${HOME}/.local/bin/pr-ci.sh")"
+out="$("${HOME}/.local/bin/pr-ci.sh" --help 2>&1)"
+grep -q "collect ONE pull request's CI results" <<<"$out" && ok "the wrapper runs it" || fail "wrapper run: $out"
 
 echo "== 'go' only as the LAST word"
 out="$(fj fleet-org go settings)"; rc=$?
