@@ -18,6 +18,9 @@ set script-interpreter := ['uv', 'run', '--script']
 # be watched failing.
 import 'workflow.just'
 
+# The fleet tooling (fleet/, #58): `just fleet-where`, `just fleet-rollout <phase> [go]`, ...
+import 'fleet/fleet.just'
+
 # Project base directory = directory of this justfile
 PROJECT_DIR := justfile_directory()
 
@@ -70,7 +73,8 @@ check-community-files:
 # themselves, both against crafted fixtures rather than against this checkout.
 test:
     #!/usr/bin/env bash
-    set -e
+    # pipefail: the sandboxes are piped through `tail -1`, which must not hide their failure.
+    set -eo pipefail
     bash tests/test-check-release-fileset.sh
     bash tests/test-new-branch-collision.sh
     bash tests/test-workflow-signing.sh
@@ -80,3 +84,10 @@ test:
     bash tests/test-variable-override.sh
     bash tests/test-community-files.sh
     bash tests/test-fleet.sh
+    bash tests/test-file-issue.sh
+    bash tests/test-fleet-config.sh
+    bash tests/test-fleet-fixes.sh
+    bash tests/test-fleet-recipes.sh
+    bash tests/test-pr-ci.sh
+    bash fleet/sandbox-test.sh | tail -1
+    SANDBOX_FLAVOUR=neutral bash fleet/sandbox-test.sh | tail -1

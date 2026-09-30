@@ -21,13 +21,17 @@ repositories cannot check themselves against.
 
 [`workflow.just`](workflow.just) implements the first two — `just where`,
 `just new-branch`, `just publish`, `just land`. It implements; they decide.
+[`fleet/`](fleet/README.md) applies them to many repositories at once: one
+change as a batched rollout, and consistent branch protection and organisation
+settings (`just fleet-where`, `just fleet-rollout <phase> [go]`, ...).
 
 **These are patterns, not deployment inventories.** Which hosts, instances and
 people fill their parameters is deployment-specific and is not recorded here.
 The one list kept here is [`fleet.toml`](fleet.toml): the public WAMP project
 repositories that consume this module, their default branches, and which
 rollout wave they belong to. That is project membership, not deployment - it
-names GitHub repositories only, never a host or a person.
+names GitHub repositories only, never a host or a person. Other fleets using
+`fleet/` keep their inventories and configuration with their owners.
 
 ## Benefits of Centralized wamp-ai and wamp-cicd
 
