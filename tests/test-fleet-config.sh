@@ -104,6 +104,19 @@ out="$(chk old)"; rc=$?
 inv badup; envf badup "UPLOAD_TO=/just/a/path"
 out="$(chk badup)"; rc=$?
 [ "$rc" -ne 0 ] && grep -q "UPLOAD_TO is not host:path" <<<"$out" && ok "UPLOAD_TO without a host fails" || fail "upload: $out"
+# a definition repository: the inventory with rollouts beside it
+mkdir -p "${WORK}/def/rollouts/way-a/0001-first" "${WORK}/def/rollouts/nosuch/0001-x"
+cp "${GOOD}" "${WORK}/def/fleet.toml"; inv withdef "${WORK}/def/fleet.toml"
+printf 'name = "0001-first"\ncohort = "way-a"\ndescription = "d"\n[applied]\nby = "hand"\n' > "${WORK}/def/rollouts/way-a/0001-first/rollout.toml"
+printf 'name = "0001-x"\ncohort = "nosuch"\ndescription = "d"\n[applied]\nby = "hand"\n' > "${WORK}/def/rollouts/nosuch/0001-x/rollout.toml"
+out="$(chk withdef)"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "its cohort 'nosuch' is not defined in the inventory" <<<"$out" && ok "a rollout for an undefined cohort fails" || fail "rollout cohort: $out"
+rm -rf "${WORK}/def/rollouts/nosuch"
+out="$(chk withdef)"; rc=$?
+[ "$rc" -eq 0 ] && grep -q "1 rollout(s) valid" <<<"$out" && ok "the definition's rollouts are checked too" || fail "rollouts valid: $out"
+sed -i 's/^name = .*/name = "0001-renamed"/' "${WORK}/def/rollouts/way-a/0001-first/rollout.toml"
+out="$(chk withdef)"; rc=$?
+[ "$rc" -ne 0 ] && grep -q "name equals the directory" <<<"$out" && ok "an invalid rollout fails fleet-check" || fail "invalid rollout: $out"
 ln -sfn "${WORK}/gone.toml" "${CFG}/dangling.toml"
 out="$(chk dangling)"; rc=$?
 [ "$rc" -ne 0 ] && grep -qE "no inventory|points at nothing" <<<"$out" && ok "a dangling inventory symlink fails" || fail "dangling: $out"

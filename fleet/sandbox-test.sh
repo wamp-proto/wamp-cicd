@@ -103,7 +103,9 @@ export PATH="${SB}/bin:${PATH}"
 
 # The inventory, schema 2: the rollout's cohort has M and B; a third repository is in ANOTHER
 # cohort only (and not even cloned), so it must not be touched; a fourth is in no cohort.
-cat > "${SB}/fleet.toml" <<FLEETEOF
+mkdir -p "${SB}/config"; chmod 700 "${SB}/config"
+DEFD="${SB}/def/${FLEET_ID}-fleet"; mkdir -p "${DEFD}"; git init -q "${DEFD}"
+cat > "${DEFD}/fleet.toml" <<FLEETEOF
 # GENERATED - do not edit; regenerate from the private inventory.
 schema = 2
 [[cohort]]
@@ -135,8 +137,19 @@ cohorts = []
 FLEETEOF
 # The fleet's configuration, exactly as on a real host (fleet/lib/config.sh reads it): the
 # inventory as a symlink beside an .env holding only what differs from the defaults.
-mkdir -p "${SB}/config"; chmod 700 "${SB}/config"
-ln -s "${SB}/fleet.toml" "${SB}/config/${FLEET_ID}.toml"
+# ... and its first rollout: a migration (apply.sh), with the issue text and an adoption check.
+MIG="0001-shared-contributing"
+RD="${DEFD}/rollouts/${COHORT}/${MIG}"; mkdir -p "${RD}"
+printf 'name = "%s"\ncohort = "%s"\ndescription = "sandbox: deploy the shared CONTRIBUTING.md"\n' "${MIG}" "${COHORT}" > "${RD}/rollout.toml"
+printf '#!/usr/bin/env bash\nset -e\necho "shared, for ${FLEET_REPO}" > CONTRIBUTING.md\n' > "${RD}/apply.sh"
+printf '#!/usr/bin/env bash\ntest -f CONTRIBUTING.md\n' > "${RD}/check.sh"
+chmod +x "${RD}/apply.sh" "${RD}/check.sh"
+cp "${HERE}/../tests/fixtures/rollout-issue-template.md" "${RD}/issue.md"
+git -C "${DEFD}" add -A; git -C "${DEFD}" commit -qm "the ${FLEET_ID} fleet: inventory and its first rollout"
+# its canonical forge URL resolves locally too (the landing updates submodules)
+DEFURL="https://github.com/sandbox/${FLEET_ID}-fleet.git"
+git clone -q --bare "${DEFD}" "${SB}/up/${FLEET_ID}-fleet.git"
+ln -s "${DEFD}/fleet.toml" "${SB}/config/${FLEET_ID}.toml"
 cat > "${SB}/config/${FLEET_ID}.env" <<CFGEOF
 FLEET_WORK_DIR=${SB}/work
 FLEET_STATE=${SB}/state
@@ -151,20 +164,26 @@ R="${HERE}/rollout.sh"
 ONLY=()   # the rollout's cohort selects the repositories
 step() { echo; echo "################ $* ################"; }
 
-step init;             "${R}" init "${ROLLOUT}" --cohort "${COHORT}" --issue-template "${HERE}/../tests/fixtures/rollout-issue-template.md" --cicd "${CICD}" --ai "${AI_NEW}"
+step "next (before)";  "${HERE}/next.sh"
+step init;             "${R}" init "${ROLLOUT}" --cohort "${COHORT}" --rollout "${MIG}" --cicd "${CICD}" --ai "${AI_NEW}"
 step "prune (go)";     "${R}" prune "${ONLY[@]}" --go
 step preflight;        "${R}" preflight "${ONLY[@]}" || echo "(preflight exit $? - expected: gitsign x509 not configured in sandbox)"
 step "file-issues";    "${R}" file-issues "${ONLY[@]}" --go
 step "rendered draft (${B})"; sed -n "1,22p" "${SB}/state/${ROLLOUT}/drafts/${B}.md"
 step "cut (go)";       "${R}" cut "${ONLY[@]}" --go
 
-step "AI work on the exchange (simulated AI-host commits)"
+step "apply (the AI host: fetch the cut branch from the exchange, apply the rollout, push)"
+mkdir -p "${SB}/aihost"
 for n in "${M}" "${B}"; do
-    t="${SB}/aiwork-${n}"; git clone -q "${SB}/exch/${n}.git" "${t}" -b fix_42
+    t="${SB}/aihost/${n}"; git clone -q "${SB}/exch/${n}.git" "${t}" -b fix_42
     git -C "${t}" config commit.gpgsign false
-    echo "shared" > "${t}/CONTRIBUTING.md"; git -C "${t}" add -A
-    git -C "${t}" commit -qm "Deploy shared CONTRIBUTING.md (#42)"; git -C "${t}" push -q origin fix_42
+    "${HERE}/apply-rollout.sh" "${t}" "${DEFD}" "${COHORT}/${MIG}" --issue 42 --fleet-url "${DEFURL}" \
+        --footer "Note: This work was completed with AI assistance (Claude Code)."
+    git -C "${t}" push -q origin fix_42
 done
+step "apply again (a re-run of the wave: exit 10, nothing to do)"
+rc=0; "${HERE}/apply-rollout.sh" "${SB}/aihost/${M}" "${DEFD}" "${COHORT}/${MIG}" --issue 42 --fleet-url "${DEFURL}" || rc=$?
+REAPPLY_RC="${rc}"
 
 step "sync (go)";      "${R}" sync  "${ONLY[@]}" --go
 step "seal (go)";      "${R}" seal  "${ONLY[@]}" --go
@@ -182,6 +201,8 @@ else
 fi
 step "finish (dry)";   "${R}" finish
 step "finish (go)";    "${R}" finish --go
+for n in "${M}" "${B}"; do git -C "${SB}/work/${n}" fetch -q upstream; done
+step "next (after)";   "${HERE}/next.sh"; NEXT_AFTER="$("${HERE}/next.sh" | tail -1)"
 
 step "VERIFY upstream master"
 for n in "${M}" "${B}"; do
@@ -203,13 +224,18 @@ check() { if eval "$2"; then echo "   ok   $1"; else echo "   FAIL $1"; nfail=$(
 for n in "${M}" "${B}"; do
     br="$(git --git-dir="${SB}/up/${n}.git" symbolic-ref --short HEAD)"
     check "${n}: upstream ${br} tip is signed" "git --git-dir='${SB}/up/${n}.git' cat-file commit '${br}' | grep -q '^gpgsig'"
-    check "${n}: AI commit landed" "git --git-dir='${SB}/up/${n}.git' log --format=%s '${br}' | grep -q 'Deploy shared CONTRIBUTING.md'"
+    check "${n}: the rollout's commit landed" "git --git-dir='${SB}/up/${n}.git' log --format=%s '${br}' | grep -q 'Apply rollout ${COHORT}/${MIG} (#42)'"
+    check "${n}: apply.sh's change is on ${br}" "git --git-dir='${SB}/up/${n}.git' show '${br}:CONTRIBUTING.md' | grep -qx 'shared, for ${n}'"
+    check "${n}: the marker is on ${br}" "git --git-dir='${SB}/up/${n}.git' cat-file -e '${br}:.waves/${COHORT}/${MIG}.toml'"
+    check "${n}: .fleet/ is pinned to the definition's commit" "[ \"\$(git --git-dir='${SB}/up/${n}.git' ls-tree '${br}' .fleet | awk '{print \$3}')\" = \"\$(git -C '${DEFD}' rev-parse HEAD)\" ]"
     for kind in up fork exch; do
         check "${n}: fix_42 deleted on ${kind}" "! git --git-dir='${SB}/${kind}/${n}.git' rev-parse -q --verify refs/heads/fix_42 >/dev/null"
     done
 done
 check "${M}: landed as a merge commit (2 parents)" \
     "[ \$(git --git-dir='${SB}/up/${M}.git' log -1 --format=%p master | wc -w) -eq 2 ]"
+check "re-applying the rollout exits 10" "[ '${REAPPLY_RC}' = 10 ]"
+check "after the wave nobody is behind" "grep -q '^0 repository/cohort pair(s) behind' <<<'${NEXT_AFTER}'"
 check "${B}: landed by fast-forward onto the seal" \
     "git --git-dir='${SB}/up/${B}.git' log -1 --format=%s main | grep -q '^Seal #42'"
 check "PR titled like its issue" "grep -q -- '--title .*(#42)' '${SB}/pr-create.log' && ! grep -q -- '--title Fleet rollout' '${SB}/pr-create.log'"

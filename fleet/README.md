@@ -87,8 +87,10 @@ its last word.** A `go` anywhere else is refused.
 | recipe | does |
 |---|---|
 | `just fleet-check` | is the fleet's configuration valid: only known keys, permissions, the inventory against its contract, its cohorts (read-only) |
+| `just fleet-next [--cohort C]` | who is behind: per repository and cohort, how many rollouts it has and which is next (read-only) |
+| `just fleet-apply-rollout <member clone> <definition clone> <cohort>/<NNNN>-<name> --issue N` | apply one rollout to one member: `apply.sh`, the `.fleet/` pin, the `.waves/` marker, one commit (no credentials; see below) |
 | `just fleet-where [full] [--cohort C]` | read-only health table: branch, clean, default branch = upstream = exchange, hooks, signing, `.cicd`/`.ai` pins, submodules, managed-file drift, `just where` |
-| `just fleet-rollout init <name> --cohort C --issue-template F` | start a rollout: freeze the cohort's members, the pin pair, the issue template |
+| `just fleet-rollout init <name> --cohort C --rollout <NNNN>-<name>` | start a wave of a rollout from the definition: freeze the members whose NEXT rollout it is, the pin pair, its issue text (`--issue-template F` for a rollout that is not a migration) |
 | `just fleet-rollout <phase> [go]` | `preflight`, `prune`, `file-issues`, `cut`, `sync`, `seal`, `publish`, `open-prs`, `status`, `land`, `finish` |
 | `just fleet-hygiene [go]` | before a rollout: bundle-backed removal of stale local branches; signing and hooks configuration |
 | `just fleet-publish [seal] [go]` | rollout branches from the exchange to the forks (optionally sealing bootstrap repositories first) |
@@ -97,16 +99,57 @@ its last word.** A `go` anywhere else is refused.
 | `just fleet-org [status \| settings \| rulesets <org> \| transfer <from> <to>] [go]` | organisations you administer: plan, 2FA, member privileges, org-wide rulesets, repository transfers |
 | `just fleet-install-tools [go]` | `~/.local/bin/wamp-cicd-{file-issue,file-comment,pr-ci}.sh`, symlinks into this clone |
 
+## Rollouts as migrations
+
+A rollout lives in the fleet's definition repository, and every member records which ones it has:
+
+```
+<definition>/rollouts/<cohort>/<NNNN>-<name>/        <member>/.fleet/                 (submodule: the definition, pinned)
+    rollout.toml   name, cohort, description         <member>/.waves/<cohort>/<NNNN>-<name>.toml   (one marker per applied rollout)
+    apply.sh       makes the change
+    check.sh       optional: already in the desired state?
+    issue.md       the issue text
+```
+
+- A cohort's rollouts are applied **in order, and none is skipped**. What is next for a member is
+  the first one without a marker on its default branch (`just fleet-next`). A wave of a rollout is
+  the members for which it is next.
+- **`apply.sh`** runs in the member's root, on the rollout branch, with `FLEET_NAME`,
+  `FLEET_COHORT`, `FLEET_ROLLOUT`, `FLEET_REPO`, `FLEET_SLUG`, `FLEET_DEFAULT_BRANCH`,
+  `FLEET_DEF_DIR` and `FLEET_TOOLS_DIR` set. It changes files; it does not commit, push or talk to
+  a forge; it needs no credentials; a second run changes nothing.
+- **`apply-rollout.sh`** is the one step that applies it: it adopts earlier rollouts that are
+  already in place (`check.sh` passes: a marker without a script hash), runs `apply.sh` **from the
+  definition clone**, sets `.fleet/` to that clone's commit, writes the marker (rollout, definition
+  commit, sha256 of `apply.sh`, the `.cicd` pin, issue, time) and makes one commit. It never
+  pushes. Exit codes: `0` applied, `10` already applied, `11` dirty tree, `12` `apply.sh` failed,
+  `13` an earlier rollout is missing, `14` not a member, `15` the commit was refused, `2` usage.
+- A rollout is **immutable once a marker names it**; a change is a new rollout.
+- **Who runs what.** `init`, `file-issues`, `cut`, `publish`, `open-prs`, `land`, `finish`: the
+  maintainer's machine (forge credentials; the maintainer signs each branch's first commit, with
+  its audit file, and the landing merge). `apply-rollout.sh`: anywhere, typically the AI host, on
+  the branches already cut - between `cut` and `publish`.
+- **`.fleet/` without network.** The runner fills `.fleet/` from the local definition clone;
+  `.gitmodules` records the canonical forge URL. On a host that cannot fetch that URL (a private
+  definition, no forge credentials), a plain `git submodule update` additionally needs
+  `git config --global url.<exchange or local clone>.insteadOf <forge URL>`.
+- **Lag check.** In a member's CI (checkout with submodules):
+  `bash .cicd/fleet/lag-check.sh` fails if a rollout of the member's cohorts in its pinned
+  `.fleet/` has no marker.
+
 ## A rollout, step by step
 
 1. Land the change's shared part in wamp-cicd / wamp-ai first; that commit is what gets pinned.
-2. Write this rollout's issue template (placeholders such as `@@SLUG@@`, `@@ROLLOUT@@`,
-   `@@COHORT@@`; see [`../tests/fixtures/rollout-issue-template.md`](../tests/fixtures/rollout-issue-template.md)),
-   then `just fleet-rollout init <name> --cohort <cohort> --issue-template <file>`.
+2. Write the rollout in the definition repository (`rollouts/<cohort>/<NNNN>-<name>/`; issue text
+   with placeholders such as `@@SLUG@@`, `@@ROLLOUT@@`, `@@COHORT@@`, see
+   [`../tests/fixtures/rollout-issue-template.md`](../tests/fixtures/rollout-issue-template.md)),
+   land it there, and check: `just fleet-check`, `just fleet-next`. Then
+   `just fleet-rollout init <name> --cohort <cohort> --rollout <NNNN>-<name>`.
 3. `just fleet-rollout preflight` until it reports no blockers (extra remotes, wrong slugs or
    default branches, missing hooks or signing).
 4. `just fleet-hygiene go` once; `just fleet-rollout file-issues go`; `just fleet-rollout cut go`.
-5. The AI assistant implements on each `fix_<N>` and pushes to the exchange.
+5. On each `fix_<N>` (fetched from the exchange): `apply-rollout.sh`, the repository's own
+   checks, any follow-up commits that need judgement, push to the exchange.
 6. `just fleet-publish seal go`, then `just fleet-rollout open-prs go`.
 7. CI loop: `just fleet-ci-results` → analysis → fixes pushed to the exchange →
    `just fleet-publish seal go`. Separate what the rollout **caused** from pre-existing drift it
@@ -115,7 +158,7 @@ its last word.** A `go` anywhere else is refused.
    = exchange, checks pass, signed tip or signed merge, verified push, branches deleted
    everywhere.
 9. `just fleet-rollout finish go` closes the rollout (it refuses while a repository has not
-   landed); only then can the next one be started.
+   landed, or its marker is not on the default branch); only then can the next one be started.
 10. `just fleet-where`: every repository in sync, pinned, signed.
 
 Every phase is re-runnable: finished work is detected and skipped.
@@ -187,6 +230,10 @@ web UI; `fleet-org` checks them.
 `just test` runs, without network: [`../tests/test-fleet-config.sh`](../tests/test-fleet-config.sh)
 (configuration), [`test-fleet-fixes.sh`](../tests/test-fleet-fixes.sh) (the fixes from the first
 use), [`test-fleet-recipes.sh`](../tests/test-fleet-recipes.sh) (the recipes and the `go` rule),
-[`test-file-issue.sh`](../tests/test-file-issue.sh), and [`sandbox-test.sh`](sandbox-test.sh) twice:
-a whole rollout (init → land, both landing modes) against local bare repositories, once in the
-WAMP shape and once with neutral names (`SANDBOX_FLAVOUR=neutral`), asserting the result.
+[`test-file-issue.sh`](../tests/test-file-issue.sh),
+[`test-fleet-runner.sh`](../tests/test-fleet-runner.sh) (`apply-rollout.sh`: every exit code,
+adoption, `.fleet/` with the network disabled, the real commit hook; next; the lag check; the
+rollout contract), and [`sandbox-test.sh`](sandbox-test.sh) twice: a whole wave of a migration
+(init → cut → apply-rollout → land in both landing modes → finish) against local bare
+repositories, once in the WAMP shape and once with neutral names (`SANDBOX_FLAVOUR=neutral`),
+asserting the result.

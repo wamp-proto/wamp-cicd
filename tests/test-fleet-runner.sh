@@ -179,6 +179,55 @@ else
   echo "  skip [no .ai hook at ${HOOKS}; set AI_JUSTFILE]"
 fi
 
+echo "== --repo: the inventory name, when the clone's directory is named differently"
+q git clone "$B" "${WORK}/some-other-dir"; O="${WORK}/some-other-dir"; q git -C "$O" checkout fix_5
+run "$O" "$DEF" core/0003-third --issue 6; rc=$?
+[ "$rc" = 14 ] && ok "by directory name it is not a member (exit 14)" || bad "dir name" "rc=$rc"
+run "$O" "$DEF" core/0003-third --issue 6 --repo bravo; rc=$?
+[ "$rc" = 0 ] && [ -f "$O/.waves/core/0003-third.toml" ] && grep -qx third "$O/THIRD.txt" && ok "--repo bravo: applied" || bad "--repo" "rc=$rc"
+
+echo "== what is next (fleet/lib/rollouts.sh)"
+# shellcheck source=/dev/null
+. "${HERE}/../fleet/lib/rollouts.sh"
+[ "$(rollouts_of "$DEF" core | tr '\n' ' ')" = "0001-first 0002-second 0003-third " ] && ok "a cohort's rollouts, in order" || bad "rollouts_of"
+[ -z "$(next_rollout "$A" fix_5 "$DEF" core)" ] && [ "$(applied_count "$A" fix_5 "$DEF" core)" = "3/3" ] && ok "alpha has all three: nothing is next" || bad "next: alpha"
+[ "$(next_rollout "$B" fix_5 "$DEF" core)" = "0003-third" ] && [ "$(applied_count "$B" fix_5 "$DEF" core)" = "2/3" ] && ok "bravo: 0003-third is next" || bad "next: bravo"
+[ "$(next_rollout "$B" main "$DEF" core)" = "0001-first" ] && ok "on a branch without markers (not landed): the first one is next" || bad "next: unlanded"
+[ "$(default_ref "$A" main)" = main ] && ok "default_ref: the local branch when there is no upstream" || bad "default_ref"
+
+echo "== lag check (fleet/lag-check.sh), as a member's CI runs it"
+LAG="${HERE}/../fleet/lag-check.sh"
+lag() { ( cd "$1" && env -u GITHUB_REPOSITORY bash "${LAG}" "${@:2}" ) > "${WORK}/log" 2>&1; }
+lag "$A" --slug acme/alpha; rc=$?
+[ "$rc" = 0 ] && grep -q "OK: acme/alpha has all 3 rollouts" "${WORK}/log" && ok "alpha: up to date with the definition it pins" || bad "lag ok" "rc=$rc"
+lag "$B" --slug ACME/Bravo; rc=$?
+[ "$rc" = 0 ] && grep -q "has all 2 rollouts" "${WORK}/log" && ok "bravo pins an EARLIER definition (2 rollouts) and has both: ok" || bad "lag: bravo at its pin" "rc=$rc"
+q git -C "$B/.fleet" fetch "$DEF" HEAD; q git -C "$B/.fleet" checkout "$DEF3"
+lag "$B" --slug acme/bravo; rc=$?
+[ "$rc" = 1 ] && grep -q "core/0003-third    (no .waves/core/0003-third.toml)" "${WORK}/log" && ok "its pin moved on without the rollout: BEHIND, exit 1, names it" || bad "lag behind" "rc=$rc"
+( cd "$B" && GITHUB_REPOSITORY=acme/bravo bash "${LAG}" ) > "${WORK}/log" 2>&1; [ $? = 1 ] && ok "the slug comes from GITHUB_REPOSITORY in CI" || bad "GITHUB_REPOSITORY"
+lag "$A" --slug acme/nobody; [ $? = 2 ] && grep -q "not in the inventory" "${WORK}/log" && ok "not in the pinned inventory: exit 2" || bad "lag: unknown slug"
+lag "${WORK}/stranger" --slug acme/alpha; [ $? = 2 ] && grep -q "no .fleet/fleet.toml" "${WORK}/log" && ok "no .fleet/: exit 2, says to check out with submodules" || bad "lag: no .fleet"
+
+echo "== a rollout directory's contract (fleet/lib/check-rollout.py)"
+CR="${HERE}/../fleet/lib/check-rollout.py"
+rd() { local d="${WORK}/rc/rollouts/$1"; rm -rf "${WORK}/rc"; mkdir -p "$d"; echo "$d"; }
+d="$(rd core/0001-ok)"; printf 'name = "0001-ok"\ncohort = "core"\ndescription = "d"\n' > "$d/rollout.toml"; printf '#!/bin/sh\n' > "$d/apply.sh"; chmod +x "$d/apply.sh"; echo i > "$d/issue.md"
+python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1 && ok "a valid rollout passes" || bad "valid rollout"
+chmod -x "$d/apply.sh"; python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1; [ $? = 1 ] && grep -q "apply.sh is executable" "${WORK}/log" && ok "apply.sh not executable" || bad "not executable"
+d="$(rd core/0001-ok)"; printf 'name = "0001-other"\ncohort = "core"\ndescription = "d"\n[applied]\nby = "hand"\n' > "$d/rollout.toml"
+python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1; [ $? = 1 ] && grep -q "name equals the directory" "${WORK}/log" && ok "name differs from the directory: refused, never guessed" || bad "name mismatch"
+d="$(rd core/0001-ok)"; printf 'name = "0001-ok"\ncohort = "elsewhere"\ndescription = "d"\n[applied]\nby = "hand"\n' > "$d/rollout.toml"
+python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1; [ $? = 1 ] && grep -q "cohort equals the parent directory" "${WORK}/log" && ok "cohort differs from the directory" || bad "cohort mismatch"
+d="$(rd core/0001-ok)"; printf 'name = "0001-ok"\ncohort = "core"\n[applied]\nby = "hand"\n' > "$d/rollout.toml"
+python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1; [ $? = 1 ] && grep -q "rollout.toml has description" "${WORK}/log" && ok "description missing" || bad "description"
+d="$(rd core/0001-ok)"; printf 'name = "0001-ok"\ncohort = "core"\ndescription = "d"\n' > "$d/rollout.toml"
+python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1; [ $? = 1 ] && grep -q "appliable (apply.sh), adoptable" "${WORK}/log" && ok "neither apply.sh, check.sh nor an [applied] record" || bad "nothing to do"
+printf '[applied]\nby = "hand"\n' >> "$d/rollout.toml"
+python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1 && ok "a declared hand-applied record passes" || bad "record"
+d="$(rd core/first)"; printf 'name = "first"\ncohort = "core"\ndescription = "d"\n[applied]\nby = "hand"\n' > "$d/rollout.toml"
+python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1; [ $? = 1 ] && grep -q "directory is <NNNN>-<name>" "${WORK}/log" && ok "a directory without its order number" || bad "no NNNN"
+
 echo "== usage"
 run "$A" "$DEF" core/0001-first; [ $? = 2 ] && ok "--issue is required" || bad "--issue required"
 run "$A" "$DEF" nonsense --issue 5; [ $? = 2 ] && ok "a malformed rollout id" || bad "malformed id"

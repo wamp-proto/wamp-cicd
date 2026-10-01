@@ -2,7 +2,7 @@
 # apply-rollout.sh - apply ONE rollout to ONE member repository, and record it.
 #
 #   apply-rollout.sh <member clone> <definition clone> <cohort>/<NNNN>-<name> --issue <n>
-#                    [--footer <line>] [--fleet-url <url>]
+#                    [--footer <line>] [--fleet-url <url>] [--repo <inventory name>]
 #
 # The credential-free primitive of "rollouts as migrations" (#64). It runs on the member's rollout
 # branch (cut beforehand, with its audit file, by the maintainer) and makes ONE commit:
@@ -41,12 +41,13 @@ HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 die() { echo "ERROR: $*" >&2; exit "${2:-2}"; }
 usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-MEMBER=""; DEF=""; ROLLOUT=""; ISSUE=""; FOOTER=""; FLEET_URL=""
+MEMBER=""; DEF=""; ROLLOUT=""; ISSUE=""; FOOTER=""; FLEET_URL=""; REPO=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --issue) ISSUE="${2:-}"; shift 2 ;;
         --footer) FOOTER="${2:-}"; shift 2 ;;
         --fleet-url) FLEET_URL="${2:-}"; shift 2 ;;
+        --repo) REPO="${2:-}"; shift 2 ;;
         -h|--help) usage ;;
         -*) die "unknown option: $1" ;;
         *) if [ -z "${MEMBER}" ]; then MEMBER="$1"; elif [ -z "${DEF}" ]; then DEF="$1"; elif [ -z "${ROLLOUT}" ]; then ROLLOUT="$1"; else usage; fi; shift ;;
@@ -68,8 +69,9 @@ RDIR="${DEF}/rollouts/${COHORT}/${RNAME}"
 DEF_COMMIT="$(git -C "${DEF}" rev-parse HEAD 2>/dev/null)" || die "${DEF} is not a git repository"
 python3 "${HERE}/lib/check-rollout.py" "${RDIR}" --quiet || die "rollout ${ROLLOUT} is not valid (failed checks above)"
 
-# Is this repository a member of the cohort? By its directory name, as the inventory names it.
-REPO="$(basename "${MEMBER}")"
+# Is this repository a member of the cohort? By its inventory name: --repo, else the clone's
+# directory name (which is the inventory name by convention, ~/work/<fleet>/<name>).
+[ -n "${REPO}" ] || REPO="$(basename "${MEMBER}")"
 row="$(python3 "${HERE}/lib/inventory-repos.py" "${DEF}/fleet.toml" --cohort "${COHORT}" | awk -F'\t' -v r="${REPO}" '$1==r')" \
     || die "cannot read the cohort '${COHORT}' from ${DEF}/fleet.toml"
 [ -n "${row}" ] || { echo "ERROR: '${REPO}' is not a member of cohort '${COHORT}' in ${DEF}/fleet.toml" >&2; exit 14; }
