@@ -123,7 +123,15 @@ A rollout lives in the fleet's definition repository, and every member records w
   definition clone**, sets `.fleet/` to that clone's commit, writes the marker (rollout, definition
   commit, sha256 of `apply.sh`, the `.cicd` pin, issue, time) and makes one commit. It never
   pushes. Exit codes: `0` applied, `10` already applied, `11` dirty tree, `12` `apply.sh` failed,
-  `13` an earlier rollout is missing, `14` not a member, `15` the commit was refused, `2` usage.
+  `13` an earlier rollout is missing, `14` not a member, `15` the commit was refused, `2` usage
+  or a definition that is not committed or not landed.
+- **The marker's `.cicd` pin** is the pin the commit sets (after `apply.sh`); an adopted rollout's
+  marker names the pin the repository was found with. A repository without `.cicd` has no such key.
+- **The definition must be landed.** The runner refuses a definition clone whose `HEAD` is not
+  contained in the default branch of one of its remotes (`refs/remotes/<remote>/HEAD`): members
+  pin `.fleet/` to that commit, and their CI must be able to fetch it from the forge's default
+  branch. So: land the definition branch, fetch, check out the default branch, then apply.
+  `--allow-unlanded` is for sandboxes and dry runs.
 - A rollout is **immutable once a marker names it**; a change is a new rollout.
 - **Who runs what.** `init`, `file-issues`, `cut`, `publish`, `open-prs`, `land`, `finish`: the
   maintainer's machine (forge credentials; the maintainer signs each branch's first commit, with

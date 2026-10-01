@@ -149,6 +149,9 @@ git -C "${DEFD}" add -A; git -C "${DEFD}" commit -qm "the ${FLEET_ID} fleet: inv
 # its canonical forge URL resolves locally too (the landing updates submodules)
 DEFURL="https://github.com/sandbox/${FLEET_ID}-fleet.git"
 git clone -q --bare "${DEFD}" "${SB}/up/${FLEET_ID}-fleet.git"
+# The definition is LANDED, as the runner requires: its commit is on the forge's default branch.
+git -C "${DEFD}" remote add upstream "${DEFURL}"; git -C "${DEFD}" fetch -q upstream
+git -C "${DEFD}" remote set-head upstream "$(git -C "${DEFD}" rev-parse --abbrev-ref HEAD)"
 ln -s "${DEFD}/fleet.toml" "${SB}/config/${FLEET_ID}.toml"
 cat > "${SB}/config/${FLEET_ID}.env" <<CFGEOF
 FLEET_WORK_DIR=${SB}/work
