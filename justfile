@@ -78,6 +78,7 @@ test:
     bash tests/test-check-release-fileset.sh
     bash tests/test-new-branch-collision.sh
     bash tests/test-new-branch-audit.sh
+    bash tests/test-audit-file.sh
     bash tests/test-workflow-signing.sh
     bash tests/test-land-tooling-pins.sh
     bash tests/test-where-output.sh
@@ -90,6 +91,7 @@ test:
     bash tests/test-fleet-config.sh
     bash tests/test-fleet-fixes.sh
     bash tests/test-fleet-recipes.sh
+    bash tests/test-fleet-runner.sh
     bash tests/test-pr-ci.sh
     bash fleet/sandbox-test.sh | tail -1
     SANDBOX_FLAVOUR=neutral bash fleet/sandbox-test.sh | tail -1

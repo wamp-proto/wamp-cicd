@@ -123,6 +123,8 @@ fixture() {
       esac
     done
     echo work > work.txt
+    # every branch carries its audit file; `land` refuses one without (#63)
+    mkdir -p .audit; echo "Related issue(s): #7" > .audit/test_fix_7.md
     q git add -A; q git commit -m "work, moving tooling pins"
     q git push origin fix_7
     [ "$ai_main" != none ] && q git config core.hooksPath .ai/.githooks

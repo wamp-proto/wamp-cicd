@@ -10,6 +10,8 @@
 #   - the resolved settings, printed;
 #   - the inventory against the schema-2 contract (fleet/lib/check-inventory.py), where it points
 #     (it is usually a symlink into the definition repository's clone), and its cohorts;
+#   - every rollout of the definition (rollouts/<cohort>/<NNNN>-<name>/, beside the inventory)
+#     against its contract (fleet/lib/check-rollout.py), and that its cohort is defined;
 #   - UPLOAD_TO looks like host:path;
 #   - which repositories of the inventory are cloned under FLEET_WORK_DIR (information only).
 # Exit 0 when valid, 1 otherwise.
@@ -62,6 +64,20 @@ if none:
 PY
 else
     bad "inventory invalid (failed checks above)"
+fi
+
+# The definition's rollouts, if the inventory lives in a definition repository.
+defdir="$(dirname "${target}")"
+if [ -d "${defdir}/rollouts" ]; then
+    nro=0; badro=0
+    while read -r rd; do
+        [ -n "${rd}" ] || continue
+        nro=$((nro+1)); c="$(basename "$(dirname "${rd}")")"
+        python3 "${FLEET_TOOLS_DIR}/lib/check-rollout.py" "${rd}" --quiet || badro=$((badro+1))
+        python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${FLEET_INVENTORY}" --cohort "${c}" >/dev/null 2>&1 \
+            || { echo "  FAIL [${c}/$(basename "${rd}"): its cohort '${c}' is not defined in the inventory]"; badro=$((badro+1)); }
+    done < <(find "${defdir}/rollouts" -mindepth 2 -maxdepth 2 -type d | sort)
+    if [ "${badro}" -eq 0 ]; then good "${nro} rollout(s) valid"; else bad "rollouts invalid (failed checks above)"; fi
 fi
 
 if [ -n "${UPLOAD_TO}" ] && [[ ! "${UPLOAD_TO}" =~ ^[A-Za-z0-9._@-]+:.+ ]]; then

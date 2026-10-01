@@ -15,6 +15,12 @@ FLEET_TOOLS := source_directory()
 # Is the fleet's configuration valid? File, keys, permissions, inventory (read-only; the check for generated configurations)
 fleet-check *args: (_fleet "check.sh" args)
 
+# Who is behind: per repository and cohort, the next rollout to apply (read-only; [--cohort C])
+fleet-next *args: (_fleet "next.sh" args)
+
+# Apply one rollout to one member clone (the credential-free step; see fleet/apply-rollout.sh)
+fleet-apply-rollout *args: (_fleet "apply-rollout.sh" args)
+
 # Health table across the fleet: sync, hooks, signing, pins, drift, `just where` (read-only; `full` adds every `just where`)
 fleet-where *args: (_fleet "where.sh" args)
 

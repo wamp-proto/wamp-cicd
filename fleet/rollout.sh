@@ -24,11 +24,16 @@
 # Every phase takes --only repo[,repo...] to act on a subset.
 # Phases are idempotent: re-running one skips repositories that are already done.
 #
-# init <name> --cohort <cohort> --issue-template <file> [--cicd <sha>] [--ai <sha>]
+# init <name> --cohort <cohort> (--rollout <NNNN>-<name> | --issue-template <file>) [--cicd <sha>] [--ai <sha>]
 #   <name>   a label for this rollout, e.g. wave1-2026-09 - NOT a commit. It names the state
 #            directory ($FLEET_STATE/<name>/, default ~/.fleet/<fleet>/<name>/) and appears in the issue titles.
 #   --cohort the cohort of the fleet's inventory this rollout applies to (required)
-#   --issue-template  this rollout's issue text (placeholders: @@SLUG@@ @@ROLLOUT@@ @@COHORT@@ ...);
+#   --rollout  a rollout of that cohort from the fleet's definition (rollouts/<cohort>/<NNNN>-<name>/):
+#            the WAVE is then the cohort's members whose NEXT rollout is this one (members that
+#            already have it, or still lack an earlier one, are left out and named); its
+#            issue.md is the issue text; `finish` also checks every member's marker has landed
+#   --issue-template  a rollout that is not (yet) a migration: its issue text, given directly
+#            (placeholders: @@SLUG@@ @@ROLLOUT@@ @@COHORT@@ ...);
 #            copied into the rollout's state, so later edits of the file change nothing
 #   --cicd   wamp-cicd commit to pin in EVERY repository of the cohort (default: current main)
 #   --ai     wamp-ai commit to pin in EVERY repository of the cohort (default: current main)
@@ -46,6 +51,8 @@ set -euo pipefail
 # shellcheck source=lib/config.sh
 . "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 FILE_ISSUE="$(command -v "${FILE_ISSUE}" 2>/dev/null || echo "${FILE_ISSUE}")"
+# shellcheck source=lib/rollouts.sh
+. "${FLEET_TOOLS_DIR}/lib/rollouts.sh"
 
 GO=0
 ONLY=""
@@ -150,20 +157,30 @@ tip_is_signed() { g "$1" cat-file commit "$2" | grep -q '^gpgsig'; }
 
 cmd_init() {
     local id="${1:-}"; shift || true
-    local usage="usage: $0 init <rollout-name> --cohort <cohort> --issue-template <file> [--cicd <sha>] [--ai <sha>]"
+    local usage="usage: $0 init <rollout-name> --cohort <cohort> (--rollout <NNNN>-<name> | --issue-template <file>) [--cicd <sha>] [--ai <sha>]"
     [ -n "${id}" ] || die "${usage}"
-    local cicd="" ai="" cohort="" template=""
+    local cicd="" ai="" cohort="" template="" migration="" defdir
     while [ $# -gt 0 ]; do
         case "$1" in
             --cicd) cicd="$2"; shift 2 ;;
             --ai)   ai="$2"; shift 2 ;;
             --cohort) cohort="$2"; shift 2 ;;
             --issue-template) template="$2"; shift 2 ;;
+            --rollout) migration="$2"; shift 2 ;;
             *) die "unknown: $1" ;;
         esac
     done
     [ -n "${cohort}" ] || die "${usage}"
-    [ -f "${template}" ] || die "no issue template for this rollout: --issue-template <file>  (${usage})"
+    defdir="$(dirname "$(readlink -f "${FLEET_INVENTORY}")")"
+    if [ -n "${migration}" ]; then
+        [ -d "${defdir}/rollouts/${cohort}/${migration}" ] || die "no rollout ${cohort}/${migration} in the fleet's definition (${defdir})"
+        python3 "${FLEET_TOOLS_DIR}/lib/check-rollout.py" "${defdir}/rollouts/${cohort}/${migration}" --quiet \
+            || die "rollout ${cohort}/${migration} is not valid (failed checks above)"
+        [ -z "$(git -C "${defdir}" status --porcelain -- rollouts fleet.toml 2>/dev/null)" ] \
+            || die "the fleet's definition has uncommitted changes under rollouts/ or fleet.toml (${defdir})"
+        [ -n "${template}" ] || template="${defdir}/rollouts/${cohort}/${migration}/issue.md"
+    fi
+    [ -f "${template}" ] || die "no issue text for this rollout: --rollout <NNNN>-<name> (its issue.md) or --issue-template <file>  (${usage})"
     # One rollout at a time per fleet (so: at most one open rollout per repository - overlapping
     # cohorts must never pin a repository two ways at once).
     if [ -f "${FLEET_STATE}/current" ] && [ "$(cat "${FLEET_STATE}/current")" != "${id}" ]; then
@@ -203,14 +220,32 @@ cmd_init() {
     python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${d}/fleet.toml" --cohort "${cohort}" > "${d}/fleet.tsv" \
         || die "fleet '${FLEET_NAME}': cannot select cohort '${cohort}'"
     echo "${cohort}" > "${d}/cohort"
+    if [ -n "${migration}" ]; then
+        # THE WAVE: the members whose next rollout in this cohort is this one. A member that
+        # already has it is done; one still lacking an earlier rollout gets that one first.
+        local wname wslug wmain wcoh wnext wref
+        : > "${d}/fleet.tsv.wave"
+        while IFS=$'\t' read -r wname wslug wmain wcoh; do
+            [ -n "${wname}" ] || continue
+            if [ ! -e "${FLEET_WORK_DIR}/${wname}/.git" ]; then warn "${wname}: not cloned - left out of this wave"; continue; fi
+            wref="$(default_ref "${FLEET_WORK_DIR}/${wname}" "${wmain}")"
+            wnext="$(next_rollout "${FLEET_WORK_DIR}/${wname}" "${wref}" "${defdir}" "${cohort}")"
+            if [ "${wnext}" = "${migration}" ]; then printf '%s\t%s\t%s\t%s\n' "${wname}" "${wslug}" "${wmain}" "${wcoh}" >> "${d}/fleet.tsv.wave"
+            elif [ -z "${wnext}" ] || [[ "${wnext}" > "${migration}" ]]; then note "${wname}: already has ${cohort}/${migration} - not in this wave"
+            else note "${wname}: BEHIND - its next rollout is ${cohort}/${wnext}; not in this wave"; fi
+        done < "${d}/fleet.tsv"
+        mv "${d}/fleet.tsv.wave" "${d}/fleet.tsv"
+        echo "${cohort}/${migration}" > "${d}/rollout"
+        printf 'rollout=%s\ndefinition=%s\n' "${cohort}/${migration}" "$(git -C "${defdir}" rev-parse HEAD)" >> "${d}/pins"
+    fi
     cp "${template}" "${d}/issue-template.md"
     local members
     members="$(cut -f1 "${d}/fleet.tsv" | tr '\n' ' ')"
-    [ -n "${members}" ] || die "cohort '${cohort}' of fleet '${FLEET_NAME}' has no repositories"
+    [ -n "${members}" ] || die "nothing to do: no repository of cohort '${cohort}' in fleet '${FLEET_NAME}' is due${migration:+ for ${cohort}/${migration}}"
 
     touch "${d}/manifest.tsv"
     echo "${id}" > "${FLEET_STATE}/current"
-    note "rollout ${id}: cohort ${cohort} = ${members}"
+    note "rollout ${id}: cohort ${cohort}${migration:+, wave of ${cohort}/${migration}} = ${members}"
     note "pins: .cicd -> ${cicd:0:7}, .ai -> ${ai:0:7}  (state: ${d})"
 }
 
@@ -564,13 +599,21 @@ cmd_land() {
 # Close the rollout: only when EVERY repository of its cohort has landed (recorded by `land`, and
 # still contained in the upstream default branch). Then another rollout may be started.
 cmd_finish() {
-    local r m tip open=0
+    local r m tip mig open=0
     for r in $(repos); do
         m="$(main_of "${r}")"
         tip="$(awk -F'\t' -v r="${r}" '$1==r {print $2}' "$(state_dir)/landed.tsv" 2>/dev/null | tail -1)"
         if [ -z "${tip}" ]; then note "${r}: NOT landed"; open=$((open+1)); continue; fi
         g "${r}" fetch -q upstream 2>/dev/null || true
         if g "${r}" merge-base --is-ancestor "${tip}" "upstream/${m}" 2>/dev/null; then
+            # A rollout that is a migration has landed only when its MARKER is on the default
+            # branch: that is the record everything later reads.
+            if [ -f "$(state_dir)/rollout" ]; then
+                mig="$(cat "$(state_dir)/rollout")"
+                if ! git -C "$(rdir "${r}")" cat-file -e "upstream/${m}:.waves/${mig}.toml" 2>/dev/null; then
+                    note "${r}: landed, but upstream/${m} has no marker .waves/${mig}.toml"; open=$((open+1)); continue
+                fi
+            fi
             note "${r}: landed (${tip:0:7} in upstream/${m})"
         else
             note "${r}: recorded as landed, but upstream/${m} does not contain ${tip:0:7}"; open=$((open+1))
@@ -587,7 +630,7 @@ cmd_finish() {
 }
 
 usage() {
-    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 

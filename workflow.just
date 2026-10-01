@@ -456,6 +456,13 @@ where:
     fi
 
     echo "  hooks        ${hooks_state#*|}"
+    # On a dev branch only: the integration branch has no audit file of its own. COMMITTED is
+    # what counts - a file that only exists in the working tree is not in the pull request.
+    if [ "${branch}" != "{{WORKFLOW_MAIN}}" ] && [ "${branch#(}" = "${branch}" ]; then
+        audit="$(just --justfile "{{justfile()}}" _workflow-audit-file "${branch}")"
+        if [ -n "${audit}" ]; then echo "  audit file   ${audit}"
+        else echo "  audit file   MISSING for this branch - expected $(just --justfile "{{justfile()}}" _workflow-audit-path "${branch}")"; fi
+    fi
     echo "  submodules   ${subs_state#*|}"
     echo "  signing      ${signing}"
     [ -n "${signing_note}" ] && echo "               ${signing_note}"
@@ -1151,7 +1158,31 @@ new-branch issue:
             echo "--> Audit file ${audit} (issue #{{issue}})"
         fi
     else
-        echo "--> NOTE: no .ai submodule here, so no audit file was generated."
+        # NO `.ai` HERE (this repository itself, wamp-ai, anything not yet onboarded): the
+        # generator above does not exist. This used to print one line - "no audit file was
+        # generated" - which scrolled by, and the file was then forgotten on four branches in
+        # a row and added by hand after the work was done (#63). So it is generated here.
+        # tests/test-audit-file.sh compares the result
+        # with the `.ai` generator's, so the two cannot drift into a fourth spelling.
+        audit="$(just --justfile "{{justfile()}}" _workflow-audit-path "${branch}")"
+        if [ ! -e "${audit}" ]; then
+            mkdir -p "$(dirname "${audit}")"
+            user="$(basename "${audit}")"; user="${user%%_*}"
+            # Inline, so this file works on its own (a repository may carry only
+            # workflow.just). The text is the `.ai` generator's, line for line.
+            {
+                printf '%s\n' "- [ ] I did **not** use any AI-assistance tools to help create this pull request."
+                printf '%s\n' "- [x] I **did** use AI-assistance tools to *help* create this pull request."
+                printf '%s\n' "- [x] I have read, understood and followed the project's AI_POLICY.md when creating code, documentation etc. for this pull request."
+                printf '\n'
+                printf 'Submitted by: @%s\n' "${user}"
+                printf 'Date: %s\n' "$(date -u +%Y-%m-%d)"
+                printf 'Related issue(s): #%s\n' "{{issue}}"
+                printf 'Branch: %s:%s\n' "${user}" "${branch}"
+            } > "${audit}"
+        fi
+        git add "${audit}"
+        echo "--> Audit file ${audit} (issue #{{issue}})"
     fi
 
     # Only commit if the audit file produced something to commit. Without the
@@ -1206,6 +1237,31 @@ new-branch issue:
 # ONE-LINE, LITERAL MESSAGES ONLY. `{{message}}` is interpolated into a
 # double-quoted `-m`, so a caller with a multi-line body or an embedded quote
 # must inline this logic instead - `commit-on-main` does, and says why.
+# Where a branch's audit file lives: .audit/<github-user>_<sanitised branch>.md (internal).
+#
+# The same derivation as the `.ai` generator's, so both name the same file: the user from the
+# fork's forge URL, else from the exchange path, else from user.name; the branch with `/`
+# replaced by `-`, dots removed, anything else unusual replaced by `_`.
+_workflow-audit-path branch:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    url="$(git config --get remote.origin.url 2>/dev/null || true)"
+    if [[ "${url}" =~ github\.com[:/]([^/]+)/ ]]; then user="${BASH_REMATCH[1]}"
+    elif [[ "${url}" =~ /scm/repos/([^/]+)/ ]]; then user="${BASH_REMATCH[1]}"
+    else user="$(git config user.name | tr '[:upper:]' '[:lower:]' | tr ' ' '-')"; fi
+    b="$(printf '%s' "{{branch}}" | sed 's/\//-/g' | sed 's/\.//g' | sed 's/[^a-zA-Z0-9_-]/_/g')"
+    printf '.audit/%s_%s.md' "${user}" "${b}"
+
+# Does the branch carry an audit file? Prints its path, or nothing (internal).
+#
+# ANY `.audit/*_<branch>.md` in the branch's tip counts - the file is the contributor's, and
+# whose fork it was cut from is not this recipe's business.
+_workflow-audit-file branch:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    b="$(printf '%s' "{{branch}}" | sed 's/\//-/g' | sed 's/\.//g' | sed 's/[^a-zA-Z0-9_-]/_/g')"
+    git ls-tree -r --name-only "{{branch}}" -- .audit 2>/dev/null | grep -E "^\.audit/[^/]+_${b}\.md$" | head -1 || true
+
 _workflow-commit branch_hint message:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -1267,6 +1323,13 @@ publish branch='':
         echo "REFUSING: the working tree is not clean." >&2
         git status --short >&2
         exit 1
+    fi
+
+    # A WARNING HERE, A REFUSAL IN `land` (#63). Publishing is how work in progress reaches
+    # the reviewer, so it is not blocked; but this is the moment the file is still cheap to add.
+    if [ -z "$(just --justfile "{{justfile()}}" _workflow-audit-file "${branch}")" ]; then
+        echo "--> WARNING: ${branch} has no audit file yet - 'just land' will refuse it." >&2
+        echo "    Expected: $(just --justfile "{{justfile()}}" _workflow-audit-path "${branch}")" >&2
     fi
 
     echo "--> Fetching all remotes"
@@ -1758,6 +1821,20 @@ land branch='':
 
     pr_note=""
     if [ "${landed}" = 0 ]; then
+        # THE AI-ASSISTANCE DISCLOSURE IS PART OF THE CONTRIBUTION (#63). Every branch
+        # carries its audit file (CONTRIBUTING.md); landing one without it is what the
+        # policy forbids, and nothing used to notice. Asked before anything moves.
+        if [ -z "$(just --justfile "{{justfile()}}" _workflow-audit-file "${branch}")" ]; then
+            echo "" >&2
+            echo "REFUSING: ${branch} has no audit file." >&2
+            echo "  Every branch carries its AI-assistance disclosure. Expected:" >&2
+            echo "    $(just --justfile "{{justfile()}}" _workflow-audit-path "${branch}")" >&2
+            echo "  Add and commit it on ${branch} (see .audit/README.md, or copy the" >&2
+            echo "  previous branch's and adjust date, issue and branch), publish, then land." >&2
+            echo "" >&2
+            exit 1
+        fi
+
         # CAN {{WORKFLOW_MAIN}} TAKE A MAINTAINER MERGE AT ALL? (#51)
         #
         # This used to refuse ANY branch that changes `.cicd` or `.ai`, for two
