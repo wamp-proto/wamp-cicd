@@ -91,6 +91,7 @@ test:
     bash tests/test-fleet-config.sh
     bash tests/test-fleet-fixes.sh
     bash tests/test-fleet-recipes.sh
+    bash tests/test-fleet-runner.sh
     bash tests/test-pr-ci.sh
     bash fleet/sandbox-test.sh | tail -1
     SANDBOX_FLAVOUR=neutral bash fleet/sandbox-test.sh | tail -1
