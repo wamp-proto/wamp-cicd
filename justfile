@@ -77,7 +77,9 @@ test:
     set -eo pipefail
     bash tests/test-check-release-fileset.sh
     bash tests/test-new-branch-collision.sh
+    bash tests/test-new-branch-audit.sh
     bash tests/test-workflow-signing.sh
+    bash tests/test-land-tooling-pins.sh
     bash tests/test-where-output.sh
     bash tests/test-pr-lookup.sh
     bash tests/test-signing-scope.sh
