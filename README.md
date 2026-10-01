@@ -27,11 +27,11 @@ settings (`just fleet-where`, `just fleet-rollout <phase> [go]`, ...).
 
 **These are patterns, not deployment inventories.** Which hosts, instances and
 people fill their parameters is deployment-specific and is not recorded here.
-The one list kept here is [`fleet.toml`](fleet.toml): the public WAMP project
-repositories that consume this module, their default branches, and which
-rollout wave they belong to. That is project membership, not deployment - it
-names GitHub repositories only, never a host or a person. Other fleets using
-`fleet/` keep their inventories and configuration with their owners.
+No inventory is kept here either: which repositories form a fleet, and their
+cohorts, is recorded in each fleet's own definition repository (for the WAMP
+projects: `wamp-proto/wamp-fleet` and `crossbario/autobahn-crossbar-fleet`).
+[`fleet/`](fleet/README.md) holds the tools and the contract such an inventory
+must meet.
 
 ## Benefits of Centralized wamp-ai and wamp-cicd
 
@@ -52,8 +52,8 @@ wamp-proto/wamp-ai          wamp-proto/wamp-cicd
        │ .ai submodule              │ .cicd submodule
        ▼                            ▼
 ┌──────────────────────────────────────────────┐
-│  the using repositories, listed in           │
-│  fleet.toml - e.g. crossbario/autobahn-python│
+│  the using repositories - e.g.               │
+│  crossbario/autobahn-python,                 │
 │  crossbario/crossbar, wamp-proto/wamp-proto  │
 └──────────────────────────────────────────────┘
 ```

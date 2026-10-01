@@ -39,7 +39,6 @@ done
 
 [ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised" >&2; exit 1; }
 STATE="${FLEET_STATE}/$(cat "${FLEET_STATE}/current")"
-WAVE="$(cat "${STATE}/wave")"
 
 run() { if [ "${GO}" = 1 ]; then echo "    \$ $*"; "$@"; else echo "    [dry-run] $*"; fi; }
 
@@ -54,8 +53,8 @@ admits_merge() {  # admits_merge <dir> <main>
 
 declare -a SUMMARY=()
 failed=0
-while IFS=$'\t' read -r name slug main _kind wave; do
-    [ "${wave}" = "${WAVE}" ] || continue
+while IFS=$'\t' read -r name slug main _cohorts; do
+    [ -n "${name}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
     issue="$(awk -F'\t' -v r="${name}" '$1==r {print $3}' "${STATE}/manifest.tsv" | tail -1)"
     d="${FLEET_WORK_DIR}/${name}"; b="fix_${issue}"

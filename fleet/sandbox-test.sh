@@ -22,9 +22,9 @@ AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../../wamp-ai/justfile}"
 # other repository names, another exchange-remote name and another fleet name, to prove the
 # tools assume nothing WAMP-specific (#58). M = merge-admitting repo, B = bootstrap repo.
 if [ "${SANDBOX_FLAVOUR:-wamp}" = neutral ]; then
-    M=alpha; B=bravo; EXCH=hub; FLEET_ID=acme; ROLLOUT=rollout-1
+    M=alpha; B=bravo; EXCH=hub; FLEET_ID=acme; ROLLOUT=rollout-1; COHORT=core
 else
-    M=autobahn-python; B=txaio; EXCH=exchange; FLEET_ID=sbx; ROLLOUT=sbx
+    M=autobahn-python; B=txaio; EXCH=exchange; FLEET_ID=sbx; ROLLOUT=sbx; COHORT=way-a
 fi
 rm -rf "${SB}"; mkdir -p "${SB}"/{bin,up,fork,exch,work,src}
 export GIT_CONFIG_GLOBAL="${SB}/gitconfig"
@@ -101,48 +101,57 @@ EOF
 chmod +x "${SB}/bin/gh" "${SB}/bin/file-issue.sh"
 export PATH="${SB}/bin:${PATH}"
 
+# The inventory, schema 2: the rollout's cohort has M and B; a third repository is in ANOTHER
+# cohort only (and not even cloned), so it must not be touched; a fourth is in no cohort.
 cat > "${SB}/fleet.toml" <<FLEETEOF
-schema = 1
+# GENERATED - do not edit; regenerate from the private inventory.
+schema = 2
+[[cohort]]
+name = "${COHORT}"
+description = "sandbox: the repositories this rollout applies to"
+[[cohort]]
+name = "other"
+description = "sandbox: a cohort the rollout does not select"
 [[repo]]
 name = "${M}"
 slug = "sandbox/${M}"
 default_branch = "master"
-kind = "python"
-wave = 1
-notes = "sandbox: hook admits merges"
+cohorts = ["${COHORT}", "other"]
 [[repo]]
 name = "${B}"
 slug = "sandbox/${B}"
 default_branch = "main"
-kind = "python"
-wave = 1
-notes = "sandbox: bootstrap, default branch main"
+cohorts = ["${COHORT}"]
 [[repo]]
 name = "not-cloned"
-slug = "nowhere/not-cloned"
+slug = "sandbox/not-cloned"
 default_branch = "master"
-kind = "cpp"
-wave = 2
-notes = "sandbox: must be ignored by a wave-1 rollout"
+cohorts = ["other"]
+[[repo]]
+name = "takes-no-part"
+slug = "sandbox/takes-no-part"
+default_branch = "master"
+cohorts = []
 FLEETEOF
-# The fleet's configuration, exactly as a user writes it (fleet/lib/config.sh reads it).
-mkdir -p "${SB}/config"
+# The fleet's configuration, exactly as on a real host (fleet/lib/config.sh reads it): the
+# inventory as a symlink beside an .env holding only what differs from the defaults.
+mkdir -p "${SB}/config"; chmod 700 "${SB}/config"
+ln -s "${SB}/fleet.toml" "${SB}/config/${FLEET_ID}.toml"
 cat > "${SB}/config/${FLEET_ID}.env" <<CFGEOF
-FLEET_INVENTORY=${SB}/fleet.toml
 FLEET_WORK_DIR=${SB}/work
 FLEET_STATE=${SB}/state
 EXCHANGE=${EXCH}
 CICD_DIR=${C}
-ISSUE_TEMPLATE=${HERE}/examples/issue-template-wamp-wave1.md
 FILE_ISSUE=${SB}/bin/file-issue.sh
 CFGEOF
 chmod 600 "${SB}/config/${FLEET_ID}.env"
-export FLEET_CONFIG_DIR="${SB}/config"   # the only *.env there: selected without FLEET_NAME
+unset XDG_CONFIG_HOME XDG_STATE_HOME FLEET_NAME
+export FLEET_CONFIG_DIR="${SB}/config"   # the only fleet there: selected without FLEET_NAME
 R="${HERE}/rollout.sh"
-ONLY=()   # the fleet file now selects the repos (wave 1)
+ONLY=()   # the rollout's cohort selects the repositories
 step() { echo; echo "################ $* ################"; }
 
-step init;             "${R}" init "${ROLLOUT}" --wave 1 --cicd "${CICD}" --ai "${AI_NEW}"
+step init;             "${R}" init "${ROLLOUT}" --cohort "${COHORT}" --issue-template "${HERE}/../tests/fixtures/rollout-issue-template.md" --cicd "${CICD}" --ai "${AI_NEW}"
 step "prune (go)";     "${R}" prune "${ONLY[@]}" --go
 step preflight;        "${R}" preflight "${ONLY[@]}" || echo "(preflight exit $? - expected: gitsign x509 not configured in sandbox)"
 step "file-issues";    "${R}" file-issues "${ONLY[@]}" --go
@@ -164,6 +173,15 @@ step "open-prs (go)";  "${R}" open-prs "${ONLY[@]}" --go
 step status;           "${R}" status "${ONLY[@]}"
 step "land (dry)";     "${R}" land "${ONLY[@]}"
 step "land (go)";      "${R}" land "${ONLY[@]}" --go
+
+step "a second rollout is refused while this one is open"
+if out="$("${R}" init next-one --cohort "${COHORT}" --issue-template "${HERE}/../tests/fixtures/rollout-issue-template.md" --cicd "${CICD}" --ai "${AI_NEW}" 2>&1)"; then
+    echo "${out}"; SECOND_REFUSED=no
+else
+    echo "${out}" | tail -1; SECOND_REFUSED=yes
+fi
+step "finish (dry)";   "${R}" finish
+step "finish (go)";    "${R}" finish --go
 
 step "VERIFY upstream master"
 for n in "${M}" "${B}"; do
@@ -195,6 +213,10 @@ check "${M}: landed as a merge commit (2 parents)" \
 check "${B}: landed by fast-forward onto the seal" \
     "git --git-dir='${SB}/up/${B}.git' log -1 --format=%s main | grep -q '^Seal #42'"
 check "PR titled like its issue" "grep -q -- '--title .*(#42)' '${SB}/pr-create.log' && ! grep -q -- '--title Fleet rollout' '${SB}/pr-create.log'"
+check "the rollout froze exactly its cohort's members" "[ \"\$(cut -f1 '${SB}/state/${ROLLOUT}/fleet.tsv' | tr '\n' ' ')\" = '${M} ${B} ' ]"
+check "a second rollout was refused while this one was open" "[ '${SECOND_REFUSED}' = yes ]"
+check "finish closed the rollout (no current rollout; its state kept)" "[ ! -e '${SB}/state/current' ] && [ -f '${SB}/state/${ROLLOUT}/landed.tsv' ]"
+check "the issue names the cohort" "grep -q 'cohort \*\*${COHORT}\*\*' '${SB}/state/${ROLLOUT}/drafts/${B}.md' 2>/dev/null || grep -rq '${COHORT}' '${SB}/state/${ROLLOUT}/drafts/'"
 check "exchange remote is '${EXCH}'" "git -C '${SB}/work/${M}' remote | grep -qx '${EXCH}'"
 echo ""
 [ "${nfail}" -eq 0 ] && echo "SANDBOX (${SANDBOX_FLAVOUR:-wamp}): all assertions passed" || { echo "SANDBOX (${SANDBOX_FLAVOUR:-wamp}): ${nfail} FAILED"; exit 1; }

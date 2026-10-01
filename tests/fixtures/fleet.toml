@@ -1,0 +1,29 @@
+# GENERATED - do not edit; regenerate from the private inventory.
+# (A fixture: the shape a generated schema-2 inventory has.)
+schema = 2
+
+[[cohort]]
+name        = "way-a"
+description = "on the Way-A workflow: .ai and .cicd pinned, workflow.just imported"
+
+[[cohort]]
+name        = "python"
+description = "Python packages"
+
+[[repo]]
+name           = "alpha"
+slug           = "acme/alpha"
+default_branch = "master"
+cohorts        = ["way-a", "python"]
+
+[[repo]]
+name           = "bravo"
+slug           = "acme/bravo"
+default_branch = "main"
+cohorts        = ["way-a"]
+
+[[repo]]
+name           = "dormant"
+slug           = "acme/dormant"
+default_branch = "master"
+cohorts        = []

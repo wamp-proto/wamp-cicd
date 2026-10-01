@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hygiene.sh - one-time cleanup of the wave's working copies on the DEV PC, before `cut`.
+# hygiene.sh - one-time cleanup of the working copies of the rollout's cohort on the DEV PC, before `cut`.
 #
 #   ./hygiene.sh                 dry run: show what would change
 #   ./hygiene.sh --go            apply
@@ -33,7 +33,6 @@ done
 [ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised (rollout.sh init ...)" >&2; exit 1; }
 ROLLOUT="$(cat "${FLEET_STATE}/current")"
 STATE="${FLEET_STATE}/${ROLLOUT}"
-WAVE="$(cat "${STATE}/wave")"
 BACKUP="${STATE}/backup"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
@@ -52,8 +51,8 @@ setcfg() {  # setcfg <repo-dir> <key> <value>  - only when different
 command -v gitsign >/dev/null || echo "WARNING: gitsign not on PATH - signing config will be set but cannot sign yet" >&2
 
 problems=0
-while IFS=$'\t' read -r name _slug main _kind wave; do
-    [ "${wave}" = "${WAVE}" ] || continue
+while IFS=$'\t' read -r name _slug main _cohorts; do
+    [ -n "${name}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
     d="${FLEET_WORK_DIR}/${name}"
     echo ""

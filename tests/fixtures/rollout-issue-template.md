@@ -6,10 +6,10 @@ Type:  CI/CD
 
 ## Summary
 
-This repository's part of a **batched fleet rollout** across **wave @@WAVE@@** of the WAMP fleet:
-@@FLEET_LIST@@. All repositories in the wave get **the same** shared-tooling pins and the same
+This repository's part of a **batched fleet rollout** across cohort **@@COHORT@@** of the WAMP fleet:
+@@FLEET_LIST@@. All repositories in the cohort get **the same** shared-tooling pins and the same
 contribution workflow in one rollout, tracked by one issue per repository. The fleet membership is
-defined in `fleet.toml` in wamp-proto/wamp-cicd.
+defined in the fleet's inventory.
 
 - **@@CICD_VERB@@ `.cicd` → wamp-proto/wamp-cicd @ `@@CICD@@`**
 - **Pin `.ai` → wamp-proto/wamp-ai @ `@@AI@@`**

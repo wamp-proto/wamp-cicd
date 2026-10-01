@@ -3,7 +3,7 @@
 #
 #   ./where.sh                 summary table (one row per repository) + problems
 #   ./where.sh --where         ... plus the full `just where` of every repository
-#   ./where.sh --wave 1        restrict to one wave of fleet.tsv
+#   ./where.sh --cohort NAME   restrict to one cohort of the fleet
 #   ./where.sh --only a,b      restrict to some repositories
 #
 # Read-only: fetches the remotes, changes nothing else. Per repository it checks
@@ -18,24 +18,29 @@ set -uo pipefail
 # shellcheck source=lib/config.sh
 . "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 
-WHERE=0; WAVE=""; ONLY=""
+WHERE=0; COHORT=""; ONLY=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --where) WHERE=1; shift ;;
-        --wave) WAVE="$2"; shift 2 ;;
+        --cohort) COHORT="$2"; shift 2 ;;
         --only) ONLY="$2"; shift 2 ;;
         -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-STATE="${FLEET_STATE}/$(cat "${FLEET_STATE}/current")"
+# The repositories: the fleet's inventory, optionally one cohort of it.
+list_repos() {
+    if [ -n "${COHORT}" ]; then python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${FLEET_INVENTORY}" --cohort "${COHORT}"
+    else python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${FLEET_INVENTORY}"; fi
+}
+REPOS_TSV="$(list_repos)" || exit 1
 
 cfg() { git -C "$1" config --get "$2" 2>/dev/null || echo "-"; }
 PROBLEMS=()
 printf '%-20s %-9s %-5s %-13s %-6s %-7s %-8s %-8s %-7s %-9s %s\n' \
     REPO BRANCH CLEAN "MAIN=UP=EXCH" HOOKS SIGNING .cicd .ai SUBMOD COMMUNITY "JUST WHERE"
-while IFS=$'\t' read -r name _slug main _kind wave; do
-    [ -z "${WAVE}" ] || [ "${wave}" = "${WAVE}" ] || continue
+while IFS=$'\t' read -r name _slug main _cohorts; do
+    [ -n "${name}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
     d="${FLEET_WORK_DIR}/${name}"
     if [ ! -d "${d}/.git" ]; then printf '%-20s (no clone at %s)\n' "${name}" "${d}"; continue; fi
@@ -65,7 +70,7 @@ while IFS=$'\t' read -r name _slug main _kind wave; do
     printf '%-20s %-9s %-5s %-13s %-6s %-7s %-8s %-8s %-7s %-9s %s\n' \
         "${name}" "${br}" "${clean}" "${sync}" "${hooks}" "${sign}" "${cicd:--}" "${ai:--}" "${sub}" "${comm}" "${jw}"
     if [ "${WHERE}" = 1 ]; then (cd "${d}" && just where 2>&1 | sed 's/^/      /'); fi
-done < "${STATE}/fleet.tsv"
+done <<<"${REPOS_TSV}"
 
 echo ""
 if [ "${#PROBLEMS[@]}" -eq 0 ]; then echo "OK: no problems"; else printf 'PROBLEM  %s\n' "${PROBLEMS[@]}"; fi

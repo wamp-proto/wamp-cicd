@@ -12,15 +12,19 @@ all landed; then default-branch protection unified across 16 repositories (#58).
 
 ## Concepts
 
-- **Fleet** — a set of repositories managed together, described by an **inventory**
-  (`fleet.toml`): name, GitHub slug, default branch, kind, wave, notes. The WAMP inventory is
-  [`../fleet.toml`](../fleet.toml); any other fleet keeps its own inventory **with its owner**,
-  not here. Slugs are checked against the GitHub API's `full_name`: `git ls-remote` silently
-  follows renames and transfers, so a stale slug never fails on its own.
-- **Wave** — the subset of the fleet one rollout touches (`wave = N`; `0` = not rolled out).
-- **Rollout** — one named, batched change across one wave. `init` freezes its state: the wave's
-  rows of the inventory, the ONE `.cicd`/`.ai` pin pair every repository gets, and a manifest
-  (repository → issue → branch → PR) that every later phase reads and extends.
+- **Fleet** — all the repositories managed together; every repository belongs to exactly one
+  fleet. It is described by an **inventory** (`<fleet>.toml`, schema 2), which lives in the
+  fleet's own definition repository, **not here**: only the tools and the contract are here.
+- **Cohort** — a named, described subset of a fleet; a repository may be in several, or in none
+  (then it takes part in nothing).
+- **Rollout** — one named, batched change applied to exactly one cohort. `init` freezes its
+  state: the cohort's members, the ONE `.cicd`/`.ai` pin pair every repository gets, the issue
+  template, and a manifest (repository → issue → branch → PR) that every later phase reads and
+  extends. One rollout at a time per fleet: `finish` closes it once every repository has landed.
+- **Wave** — one run of a rollout on its cohort.
+
+Slugs are checked against the GitHub API's `full_name`: `git ls-remote` silently follows renames
+and transfers, so a stale slug never fails on its own.
 
 **Where things run.** Everything that talks to GitHub with credentials, or signs, runs on the
 maintainer's machine. An AI assistant works on its own host with **no** forge credentials: it
@@ -32,32 +36,43 @@ first Way-A branch there: the "bootstrap") lands by **fast-forward onto a signed
 maintainer-signed commit, usually an empty "Seal #N" commit. After the first rollout every default
 branch carries the new hook.
 
-## Configuration: one file per fleet, one inventory per fleet
+## Configuration: a fleet is two files, side by side
 
-A fleet is exactly two files, and nothing else configures the tools:
+In `${XDG_CONFIG_HOME:-~/.config}/wamp-cicd/fleet/`, and nothing else configures the tools:
 
-- `~/.config/fleet/<name>.env` — `KEY=value` lines, `chmod 600`, in a `chmod 700` directory (both
-  are refused otherwise: the file is executed). Keys and defaults: [`lib/config.sh`](lib/config.sh);
-  `FLEET_INVENTORY` is the only required one.
-- the inventory it names — `fleet.toml`, format and rules in
-  [`lib/check-inventory.py`](lib/check-inventory.py).
+- **`<fleet>.toml`** — the inventory. Usually a symlink to `fleet.toml` in a clone of the fleet's
+  definition repository. Contract (schema 2), in [`lib/check-inventory.py`](lib/check-inventory.py):
+  ```toml
+  schema = 2
+  [[cohort]]   name = "way-a"            description = "what its members have in common"
+  [[repo]]     name = "autobahn-python"  slug = "crossbario/autobahn-python"
+               default_branch = "master" cohorts = ["way-a", "python"]
+  ```
+  No other keys; `name` is the clone's directory and the last part of `slug`; every cohort a
+  repository names must be defined.
+- **`<fleet>.env`** — per-host settings, `KEY=value`, **optional**: every key has a default
+  ([`lib/config.sh`](lib/config.sh)). Typically just `EXCHANGE=<remote name>` and
+  `UPLOAD_TO=<host>:<path>`. Mode 600, in a mode 700 directory (refused otherwise: it is executed).
+  The environment overrides it (`EXCHANGE=other just fleet-where`).
 
-Both may be **generated** from a single source of truth (for example an Ansible inventory). The
-generator's output must pass `just fleet-check`: an unknown key (a generator typo) or an entry
-breaking the inventory contract fails it, rather than being silently ignored. `rollout.sh init`
-refuses an invalid inventory, too. The generator and the source stay with their owner; only the
-contract lives here.
+By convention the clones live in `~/work/<fleet>/<repo>`, and a rollout's state and logs in
+`${XDG_STATE_HOME:-~/.local/state}/wamp-cicd/fleet/<fleet>/`.
+
+Both files may be **generated** from a single source of truth. The output must pass
+`just fleet-check`: an unknown key (a generator typo) or an entry breaking the inventory contract
+fails it, rather than being silently ignored. `rollout.sh init` refuses an invalid inventory, too.
+The generator and its source stay with their owner; only the contract lives here.
 
 ## Setup (maintainer's machine)
 
-1. **Configure the fleet:** copy [`examples/wamp.env`](examples/wamp.env) to
-   `~/.config/fleet/<name>.env`, `chmod 600`, and adjust. Keys and defaults are listed in
-   [`lib/config.sh`](lib/config.sh). With one `*.env` it is selected automatically; with several,
-   set `FLEET_NAME`. The environment overrides the file (`EXCHANGE=other just fleet-where`).
-2. **Check it:** `just fleet-check` (see below).
-3. **Install the personal tools:** `just fleet-install-tools go` puts `file-issue.sh`,
-   `file-comment.sh` (copies) and `pr-ci.sh` (a wrapper running it from this checkout) into
-   `~/.local/bin` (which should be on `PATH`).
+1. **Configure the fleet:** `ln -s <definition clone>/fleet.toml ~/.config/wamp-cicd/fleet/<fleet>.toml`,
+   and write `<fleet>.env` beside it if a default does not fit this host. With one fleet
+   configured it is selected automatically; with several, set `FLEET_NAME`.
+2. **Check it:** `just fleet-check`.
+3. **Link the personal tools:** `just fleet-install-tools go` creates
+   `~/.local/bin/wamp-cicd-{file-issue,file-comment,pr-ci}.sh` as symlinks into this clone (type
+   `wamp-cicd-` and TAB). Run it from a standalone wamp-cicd clone: it refuses inside a `.cicd/`
+   submodule, re-points existing symlinks, and never touches a regular file.
 4. **Requirements:** `git`, `just`, `gh` (authenticated; `admin:org` scope for `fleet-org`),
    `python3`, and for signing `gitsign`.
 
@@ -71,26 +86,26 @@ its last word.** A `go` anywhere else is refused.
 
 | recipe | does |
 |---|---|
-| `just fleet-check` | is the fleet's configuration valid: only known keys, permissions of file and directory, the inventory against its contract (read-only) |
-| `just fleet-where [full]` | read-only health table: branch, clean, default branch = upstream = exchange, hooks, signing, `.cicd`/`.ai` pins, submodules, managed-file drift, `just where` |
-| `just fleet-rollout init <name> --wave N` | start a rollout: freeze the wave, the pin pair, the inventory |
-| `just fleet-rollout <phase> [go]` | `preflight`, `prune`, `file-issues`, `cut`, `sync`, `seal`, `publish`, `open-prs`, `status`, `land` |
+| `just fleet-check` | is the fleet's configuration valid: only known keys, permissions, the inventory against its contract, its cohorts (read-only) |
+| `just fleet-where [full] [--cohort C]` | read-only health table: branch, clean, default branch = upstream = exchange, hooks, signing, `.cicd`/`.ai` pins, submodules, managed-file drift, `just where` |
+| `just fleet-rollout init <name> --cohort C --issue-template F` | start a rollout: freeze the cohort's members, the pin pair, the issue template |
+| `just fleet-rollout <phase> [go]` | `preflight`, `prune`, `file-issues`, `cut`, `sync`, `seal`, `publish`, `open-prs`, `status`, `land`, `finish` |
 | `just fleet-hygiene [go]` | before a rollout: bundle-backed removal of stale local branches; signing and hooks configuration |
 | `just fleet-publish [seal] [go]` | rollout branches from the exchange to the forks (optionally sealing bootstrap repositories first) |
 | `just fleet-ci-results` | every rollout PR's checks, runs, jobs and failed-job logs (also of runs still in progress); uploaded if `UPLOAD_TO` is set |
-| `just fleet-rulesets [integrity] [go]` | default-branch rulesets per repository from [`rulesets/`](rulesets/), then classic branch protection off |
+| `just fleet-rulesets [integrity] [--cohort C] [go]` | default-branch rulesets per repository from [`rulesets/`](rulesets/), then classic branch protection off |
 | `just fleet-org [status \| settings \| rulesets <org> \| transfer <from> <to>] [go]` | organisations you administer: plan, 2FA, member privileges, org-wide rulesets, repository transfers |
-| `just fleet-install-tools [go]` | `file-issue.sh`, `file-comment.sh` (copies), `pr-ci.sh` (wrapper) into `~/.local/bin` |
+| `just fleet-install-tools [go]` | `~/.local/bin/wamp-cicd-{file-issue,file-comment,pr-ci}.sh`, symlinks into this clone |
 
 ## A rollout, step by step
 
 1. Land the change's shared part in wamp-cicd / wamp-ai first; that commit is what gets pinned.
-2. `just fleet-rollout init <name> --wave 1`. Write this rollout's issue template (example:
-   [`examples/issue-template-wamp-wave1.md`](examples/issue-template-wamp-wave1.md)) and pass it
-   when filing: `ISSUE_TEMPLATE=<file> just fleet-rollout file-issues go`.
+2. Write this rollout's issue template (placeholders such as `@@SLUG@@`, `@@ROLLOUT@@`,
+   `@@COHORT@@`; see [`../tests/fixtures/rollout-issue-template.md`](../tests/fixtures/rollout-issue-template.md)),
+   then `just fleet-rollout init <name> --cohort <cohort> --issue-template <file>`.
 3. `just fleet-rollout preflight` until it reports no blockers (extra remotes, wrong slugs or
    default branches, missing hooks or signing).
-4. `just fleet-hygiene go` once; file the issues (step 2); `just fleet-rollout cut go`.
+4. `just fleet-hygiene go` once; `just fleet-rollout file-issues go`; `just fleet-rollout cut go`.
 5. The AI assistant implements on each `fix_<N>` and pushes to the exchange.
 6. `just fleet-publish seal go`, then `just fleet-rollout open-prs go`.
 7. CI loop: `just fleet-ci-results` → analysis → fixes pushed to the exchange →
@@ -99,13 +114,15 @@ its last word.** A `go` anywhere else is refused.
 8. `just fleet-rollout land` (dry), then `just fleet-rollout land go`: local tip = PR head = fork
    = exchange, checks pass, signed tip or signed merge, verified push, branches deleted
    everywhere.
-9. `just fleet-where`: every repository in sync, pinned, signed.
+9. `just fleet-rollout finish go` closes the rollout (it refuses while a repository has not
+   landed); only then can the next one be started.
+10. `just fleet-where`: every repository in sync, pinned, signed.
 
 Every phase is re-runnable: finished work is detected and skipped.
 
 ## Issue and comment drafts
 
-`file-issue.sh <draft.md>` and `file-comment.sh <draft.md>` file a reviewed draft:
+`wamp-cicd-file-issue.sh <draft.md>` and `wamp-cicd-file-comment.sh <draft.md>` file a reviewed draft:
 
 ```
 Repo:  <owner>/<repo>            Repo:  <owner>/<repo>
@@ -124,7 +141,7 @@ sensitive material, and `/tmp` does not survive a reboot.
 
 ## One pull request's CI, for the AI host
 
-`pr-ci.sh <PR URL>` (or `<owner>/<repo>#<n>`) collects one pull request's checks, runs and
+`wamp-cicd-pr-ci.sh <PR URL>` (or `<owner>/<repo>#<n>`) collects one pull request's checks, runs and
 failed-job logs — also of runs still in progress. It works for **fleet repositories only**: the
 fleet is the one whose inventory lists the repository (or `FLEET_NAME`), and that fleet's
 configuration decides where the results go — `${FLEET_CI_DIR}/<repo>/pr<n>-<stamp>/` locally,

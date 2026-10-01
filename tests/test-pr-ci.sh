@@ -24,12 +24,15 @@ passed=0; failed=0
 ok()   { echo "  ok   $1"; passed=$((passed+1)); }
 fail() { echo "  FAIL $1"; failed=$((failed+1)); }
 
-unset XDG_CONFIG_HOME FLEET_NAME FLEET_CONFIG_DIR
+unset XDG_CONFIG_HOME XDG_STATE_HOME FLEET_NAME FLEET_CONFIG_DIR
 export HOME="${WORK}/home"; mkdir -p "${HOME}" "${WORK}/bin"
 # Two fleets: "tools" lists acme/tool (and uploads), "other" lists something else.
-mkdir -p "${HOME}/.config/fleet" "${WORK}/aihost"; chmod 700 "${HOME}/.config/fleet"
-inv() { printf 'schema = 1\n[[repo]]\nname = "%s"\nslug = "%s"\ndefault_branch = "main"\nkind = "python"\nwave = 1\nnotes = "test"\n' "${2##*/}" "$2" > "${WORK}/$1.toml"; }
-fleet() { printf '%s\n' "FLEET_INVENTORY=${WORK}/$1.toml" "${@:2}" > "${HOME}/.config/fleet/$1.env"; chmod 600 "${HOME}/.config/fleet/$1.env"; }
+CFG="${HOME}/.config/wamp-cicd/fleet"
+mkdir -p "${CFG}" "${WORK}/aihost"; chmod 700 "${CFG}"
+# inv <fleet> <slug>: the fleet's inventory (schema 2), linked into the configuration directory.
+inv() { printf 'schema = 2\n[[cohort]]\nname = "core"\ndescription = "test"\n[[repo]]\nname = "%s"\nslug = "%s"\ndefault_branch = "main"\ncohorts = ["core"]\n' "${2##*/}" "$2" > "${WORK}/$1.toml"; ln -sfn "${WORK}/$1.toml" "${CFG}/$1.toml"; }
+# fleet <fleet> [KEY=value ...]: its per-host settings, if any.
+fleet() { [ $# -gt 1 ] || return 0; printf '%s\n' "${@:2}" > "${CFG}/$1.env"; chmod 600 "${CFG}/$1.env"; }
 inv tools acme/tool;   fleet tools "UPLOAD_TO=aihost:${WORK}/aihost/fleet-ci/tools"
 inv other acme/else;   fleet other
 cat > "${WORK}/bin/gh" <<'STUB'
@@ -72,7 +75,7 @@ out="$(FLEET_NAME=tools bash "$S" acme/tool#59 --no-upload 2>&1)"
 grep -q "(fleet 'tools')" <<<"$out" && ok "FLEET_NAME decides" || fail "FLEET_NAME: $out"
 out="$(FLEET_NAME=other bash "$S" acme/tool#59 --no-upload 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && grep -q "is not in fleet 'other'" <<<"$out" && ok "FLEET_NAME of a fleet without it: refused" || fail "wrong fleet: $out"
-rm -f "${HOME}/.config/fleet/third.env"
+rm -f "${CFG}/third.toml" "${CFG}/third.env"
 out="$(bash "$S" acme/tool#1 --no-upload 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && grep -q 'could not read acme/tool PR #1' <<<"$out" && ok "unreadable PR: error" || fail "bad PR: $out"
 
