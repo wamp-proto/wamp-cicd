@@ -40,7 +40,10 @@ PASS=0; FAIL=0
 q() { "$@" >/dev/null 2>&1; }
 ok()  { echo "  ok   [$1]"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL [$1] ${2:-}"; sed 's/^/         /' "${WORK}/log" | tail -8; FAIL=$((FAIL + 1)); }
-run() { "${RUN}" "$@" > "${WORK}/log" 2>&1; }
+# The definition here has no forge to be landed on; the refusal of an unlanded one has its own
+# section below, which calls the runner without the flag.
+run() { "${RUN}" "$@" --allow-unlanded > "${WORK}/log" 2>&1; }
+strict() { "${RUN}" "$@" > "${WORK}/log" 2>&1; }
 URL="https://github.com/acme/acme-fleet.git"
 
 # --- the definition repository: one cohort, two rollouts (a third added later) ------------------
@@ -227,6 +230,51 @@ printf '[applied]\nby = "hand"\n' >> "$d/rollout.toml"
 python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1 && ok "a declared hand-applied record passes" || bad "record"
 d="$(rd core/first)"; printf 'name = "first"\ncohort = "core"\ndescription = "d"\n[applied]\nby = "hand"\n' > "$d/rollout.toml"
 python3 "$CR" "$d" --quiet > "${WORK}/log" 2>&1; [ $? = 1 ] && grep -q "directory is <NNNN>-<name>" "${WORK}/log" && ok "a directory without its order number" || bad "no NNNN"
+
+echo "== the marker's .cicd pin: what THIS commit sets; an adopted marker keeps the pin it was found with (#67)"
+TOOLS="${WORK}/tools"; q git init "$TOOLS"; echo v1 > "$TOOLS/v"; q git -C "$TOOLS" add -A; q git -C "$TOOLS" commit -m v1; T1="$(git -C "$TOOLS" rev-parse HEAD)"
+echo v2 > "$TOOLS/v"; q git -C "$TOOLS" commit -am v2; T2="$(git -C "$TOOLS" rev-parse HEAD)"
+PIN="${WORK}/pin-fleet"; q git init "$PIN"; mkdir -p "$PIN/rollouts/core"
+printf 'schema = 2\n[[cohort]]\nname = "core"\ndescription = "c"\n[[repo]]\nname = "delta"\nslug = "acme/delta"\ndefault_branch = "main"\ncohorts = ["core"]\n[[repo]]\nname = "echo"\nslug = "acme/echo"\ndefault_branch = "main"\ncohorts = ["core"]\n' > "$PIN/fleet.toml"
+pinroll() {  # pinroll <NNNN-name> <apply body> [check body]
+  local d="$PIN/rollouts/core/$1"; mkdir -p "$d"
+  printf 'name = "%s"\ncohort = "core"\ndescription = "test rollout"\n' "$1" > "$d/rollout.toml"
+  printf '#!/usr/bin/env bash\nset -e\n%s\n' "$2" > "$d/apply.sh"; chmod +x "$d/apply.sh"
+  [ -z "${3:-}" ] || { printf '#!/usr/bin/env bash\n%s\n' "$3" > "$d/check.sh"; chmod +x "$d/check.sh"; }
+  echo "issue text" > "$d/issue.md"
+}
+pinroll 0001-tools "git -c protocol.file.allow=always submodule add --quiet '$TOOLS' .cicd >/dev/null 2>&1; git -C .cicd checkout --quiet $T1; git add .cicd" 'test -e .cicd/v'
+pinroll 0002-bump  "git -C .cicd checkout --quiet $T2"
+q git -C "$PIN" add -A; q git -C "$PIN" commit -m "definition: add the tools, then move them"
+cicd_of() { python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb")).get("cicd", "<absent>"))' "$1" 2>&1; }
+member delta; D="${WORK}/delta"
+run "$D" "$PIN" core/0001-tools --issue 8 --fleet-url "$URL"; rc=$?
+[ "$rc" = 0 ] && [ "$(cicd_of "$D/.waves/core/0001-tools.toml")" = "$T1" ] && ok "a rollout that ADDS .cicd: the marker names the pin it added, not an empty one" || bad "marker pin (added)" "rc=$rc $(cicd_of "$D/.waves/core/0001-tools.toml")"
+run "$D" "$PIN" core/0002-bump --issue 8 --fleet-url "$URL"; rc=$?
+[ "$rc" = 0 ] && [ "$(cicd_of "$D/.waves/core/0002-bump.toml")" = "$T2" ] && ok "a rollout that MOVES .cicd (unstaged by apply.sh): the marker names the new pin" || bad "marker pin (moved)" "rc=$rc $(cicd_of "$D/.waves/core/0002-bump.toml")"
+[ "$(git -C "$D" ls-tree HEAD .cicd | awk '{print $3}')" = "$T2" ] && ok "and that is the pin the commit sets" || bad "commit pin"
+member echo; E="${WORK}/echo"
+q git -C "$E" -c protocol.file.allow=always submodule add "$TOOLS" .cicd; q git -C "$E" -C .cicd checkout "$T1"; q git -C "$E" add -A; q git -C "$E" commit -m "tools, by hand"
+run "$E" "$PIN" core/0002-bump --issue 9 --fleet-url "$URL"; rc=$?
+[ "$rc" = 0 ] && [ "$(cicd_of "$E/.waves/core/0001-tools.toml")" = "$T1" ] && [ "$(cicd_of "$E/.waves/core/0002-bump.toml")" = "$T2" ] \
+    && ok "adopted and applied in ONE commit: the adopted marker names the old pin, the applied one the new" || bad "adopted vs applied pin" "rc=$rc"
+[ "$(cicd_of "$A/.waves/core/0001-first.toml")" = "<absent>" ] && ok "a repository without .cicd: no cicd key (not an empty one)" || bad "no .cicd" "$(cicd_of "$A/.waves/core/0001-first.toml")"
+
+echo "== the definition must be landed: its HEAD in the default branch of one of its remotes (#67)"
+FORGE="${WORK}/forge.git"; q git clone --bare "$PIN" "$FORGE"
+LD="${WORK}/landed-fleet"; q git -c protocol.file.allow=always clone "$FORGE" "$LD"
+member delta2; D2="${WORK}/delta2"; d20="$(git -C "$D2" rev-parse HEAD)"
+strict "$D2" "$LD" core/0001-tools --issue 10 --repo delta --fleet-url "$URL"; rc=$?
+[ "$rc" = 0 ] && ok "HEAD is the remote's default branch: applied" || bad "landed definition" "rc=$rc"
+q git -C "$LD" checkout -b fix_1; echo more >> "$LD/rollouts/core/0002-bump/issue.md"; q git -C "$LD" commit -am "an unlanded change"
+strict "$D2" "$LD" core/0002-bump --issue 10 --repo delta --fleet-url "$URL"; rc=$?
+[ "$rc" = 2 ] && grep -q "is not landed" "${WORK}/log" && [ -z "$(git -C "$D2" status --porcelain)" ] && [ ! -e "$D2/.waves/core/0002-bump.toml" ] \
+    && ok "HEAD on a branch the default branch does not contain: refused, exit 2, nothing changed" || bad "unlanded refused" "rc=$rc"
+run "$D2" "$LD" core/0002-bump --issue 10 --repo delta --fleet-url "$URL"; rc=$?
+[ "$rc" = 0 ] && ok "--allow-unlanded: applied" || bad "--allow-unlanded" "rc=$rc"
+member delta3
+strict "${WORK}/delta3" "$PIN" core/0001-tools --issue 11 --repo delta --fleet-url "$URL"; rc=$?
+[ "$rc" = 2 ] && grep -q "is not landed" "${WORK}/log" && ok "a definition clone without any remote default branch: refused (cannot tell)" || bad "no remote" "rc=$rc"
 
 echo "== usage"
 run "$A" "$DEF" core/0001-first; [ $? = 2 ] && ok "--issue is required" || bad "--issue required"

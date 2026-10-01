@@ -2,7 +2,7 @@
 # apply-rollout.sh - apply ONE rollout to ONE member repository, and record it.
 #
 #   apply-rollout.sh <member clone> <definition clone> <cohort>/<NNNN>-<name> --issue <n>
-#                    [--footer <line>] [--fleet-url <url>] [--repo <inventory name>]
+#                    [--footer <line>] [--fleet-url <url>] [--repo <inventory name>] [--allow-unlanded]
 #
 # The credential-free primitive of "rollouts as migrations" (#64). It runs on the member's rollout
 # branch (cut beforehand, with its audit file, by the maintainer) and makes ONE commit:
@@ -16,6 +16,12 @@
 #      a host without forge credentials. .gitmodules records the canonical forge URL;
 #   4. writes the marker .waves/<cohort>/<NNNN>-<name>.toml;
 #   5. commits: "Apply rollout <cohort>/<NNNN>-<name> (#<n>)".
+#
+# The definition clone's HEAD must be LANDED: contained in the default branch of one of its remotes
+# (refs/remotes/<remote>/HEAD). .fleet/ is pinned to that commit, and a commit of an unlanded
+# branch is one the forge does not have on its default branch - or at all: the member's CI could
+# not check out .fleet/, and once the branch lands as a merge the pin is not on the default branch.
+# --allow-unlanded turns that refusal off (sandboxes, dry runs).
 #
 # It never pushes, never talks to a forge, needs no credentials, and never derives an exchange
 # path: it works on the clone it is given. Signing is not its business (the maintainer signs the
@@ -34,20 +40,21 @@
 #   13  an earlier rollout of the cohort is missing and cannot be adopted - nothing done
 #   14  the repository is not a member of that cohort (per the definition's fleet.toml)
 #   15  the commit was refused (a hook) - changes left staged
-#    2  usage, or the definition clone is not in a committed state
+#    2  usage, or the definition clone is not in a committed state, or its HEAD is not landed
 
 set -uo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 die() { echo "ERROR: $*" >&2; exit "${2:-2}"; }
-usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-MEMBER=""; DEF=""; ROLLOUT=""; ISSUE=""; FOOTER=""; FLEET_URL=""; REPO=""
+MEMBER=""; DEF=""; ROLLOUT=""; ISSUE=""; FOOTER=""; FLEET_URL=""; REPO=""; ALLOW_UNLANDED=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --issue) ISSUE="${2:-}"; shift 2 ;;
         --footer) FOOTER="${2:-}"; shift 2 ;;
         --fleet-url) FLEET_URL="${2:-}"; shift 2 ;;
         --repo) REPO="${2:-}"; shift 2 ;;
+        --allow-unlanded) ALLOW_UNLANDED=1; shift ;;
         -h|--help) usage ;;
         -*) die "unknown option: $1" ;;
         *) if [ -z "${MEMBER}" ]; then MEMBER="$1"; elif [ -z "${DEF}" ]; then DEF="$1"; elif [ -z "${ROLLOUT}" ]; then ROLLOUT="$1"; else usage; fi; shift ;;
@@ -67,6 +74,21 @@ RDIR="${DEF}/rollouts/${COHORT}/${RNAME}"
 [ -z "$(git -C "${DEF}" status --porcelain -- rollouts fleet.toml 2>/dev/null)" ] \
     || die "the definition clone has uncommitted changes under rollouts/ or fleet.toml"
 DEF_COMMIT="$(git -C "${DEF}" rev-parse HEAD 2>/dev/null)" || die "${DEF} is not a git repository"
+if [ "${ALLOW_UNLANDED}" != 1 ]; then
+    landed=""
+    while read -r ref; do
+        [ -n "${ref}" ] || continue
+        if git -C "${DEF}" merge-base --is-ancestor "${DEF_COMMIT}" "${ref}" 2>/dev/null; then landed="${ref}"; break; fi
+    done < <(git -C "${DEF}" for-each-ref --format='%(symref)' 'refs/remotes/*/HEAD' | sort -u)
+    if [ -z "${landed}" ]; then
+        echo "ERROR: the definition clone's HEAD (${DEF_COMMIT:0:12}, $(git -C "${DEF}" rev-parse --abbrev-ref HEAD)) is not landed:" >&2
+        echo "       it is not contained in the default branch of any of its remotes (refs/remotes/<remote>/HEAD)." >&2
+        echo "       Land that branch first, fetch, and check out the default branch - members pin .fleet/ to this commit." >&2
+        echo "       (A remote without a known default branch: git -C ${DEF} remote set-head <remote> <branch>.)" >&2
+        echo "       For a sandbox or a dry run: --allow-unlanded." >&2
+        exit 2
+    fi
+fi
 python3 "${HERE}/lib/check-rollout.py" "${RDIR}" --quiet || die "rollout ${ROLLOUT} is not valid (failed checks above)"
 
 # Is this repository a member of the cohort? By its inventory name: --repo, else the clone's
@@ -106,7 +128,10 @@ fi
 export FLEET_NAME="${FLEET_NAME:-$(basename "${DEF}" | sed 's/-fleet$//')}"
 export FLEET_COHORT="${COHORT}" FLEET_ROLLOUT="${RNAME}" FLEET_REPO="${REPO}" FLEET_SLUG="${SLUG}"
 export FLEET_DEFAULT_BRANCH="${DEFAULT_BRANCH}" FLEET_DEF_DIR="${DEF}" FLEET_TOOLS_DIR="${HERE}"
-cicd_pin() { git -C "${MEMBER}" ls-tree HEAD .cicd 2>/dev/null | awk '{print $3}'; }
+# The .cicd pin as staged (the index): before apply.sh that is HEAD's, after it and `git add -A`
+# it is the pin the commit will set. Empty when the repository has no .cicd.
+cicd_pin() { git -C "${MEMBER}" ls-files -s -- .cicd 2>/dev/null | awk '$1=="160000"{print $2}'; }
+CICD_BEFORE="$(cicd_pin)"
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # 1. Adopt earlier rollouts of the cohort - or stop: nothing is skipped.
@@ -166,21 +191,24 @@ fi
     git -C .fleet remote set-url origin "${url}" 2>/dev/null || true
 ) || exit 12
 
-# 4. The markers.
-write_marker() {  # write_marker <rollout name> <script hash or empty>
+# 4. The markers. An ADOPTED rollout records the .cicd pin its check.sh passed on (before apply.sh
+# ran); the rollout that ran records the pin THIS COMMIT sets. No .cicd: the key is left out.
+git -C "${MEMBER}" add -A
+CICD_AFTER="$(cicd_pin)"
+write_marker() {  # write_marker <rollout name> <script hash or empty> <.cicd pin or empty>
     local f="${MEMBER}/$(marker "$1")"
     mkdir -p "$(dirname "${f}")"
     {
         echo "rollout = \"${COHORT}/$1\""
         echo "fleet   = \"${url%.git}@${DEF_COMMIT}\""
         if [ -n "$2" ]; then echo "script  = \"$2\""; else echo "adopted = true   # already in the desired state (check.sh); apply.sh did not run"; fi
-        echo "cicd    = \"$(cicd_pin)\""
+        [ -z "$3" ] || echo "cicd    = \"$3\""
         echo "issue   = ${ISSUE}"
         echo "applied = $(now)"
     } > "${f}"
 }
-for a in ${ADOPTED[@]+"${ADOPTED[@]}"}; do write_marker "${a}" ""; done
-write_marker "${RNAME}" "${SCRIPT_HASH}"
+for a in ${ADOPTED[@]+"${ADOPTED[@]}"}; do write_marker "${a}" "" "${CICD_BEFORE}"; done
+write_marker "${RNAME}" "${SCRIPT_HASH}" "${CICD_AFTER}"
 
 # 5. One commit. The tree was clean before, so everything staged here is this rollout's.
 git -C "${MEMBER}" add -A
