@@ -6,9 +6,10 @@
 #                                                then delete the classic branch protection
 #   ./rulesets.sh --go --integrity         also apply "master-integrity" (deletion +
 #                                                non_fast_forward, NO bypass: nobody force-pushes/deletes)
+#   ./rulesets.sh --cohort NAME            restrict to one cohort
 #   ./rulesets.sh --only a,b               restrict to some repositories
 #
-# Repositories come from the current rollout's fleet.tsv (all waves). Per repository:
+# Repositories come from the fleet's inventory (all of them, or --cohort NAME). Per repository:
 #   1. show the classic protection of the default branch and the existing rulesets
 #   2. create the ruleset, or update it in place if one of the same name exists (idempotent)
 #   3. only after the ruleset is active: delete the classic protection (no unprotected window)
@@ -19,25 +20,28 @@ set -uo pipefail
 # shellcheck source=lib/config.sh
 . "$(dirname "$(readlink -f "$0")")/lib/config.sh"
 
-GO=0; INTEGRITY=0; ONLY=""
+GO=0; INTEGRITY=0; ONLY=""; COHORT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --go) GO=1; shift ;;
         --integrity) INTEGRITY=1; shift ;;
+        --cohort) COHORT="$2"; shift 2 ;;
         --only) ONLY="$2"; shift 2 ;;
-        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
 command -v gh >/dev/null && gh auth status >/dev/null 2>&1 || { echo "ERROR: gh missing or not authenticated" >&2; exit 1; }
-STATE="${FLEET_STATE}/$(cat "${FLEET_STATE}/current")"
+if [ -n "${COHORT}" ]; then REPOS_TSV="$(python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${FLEET_INVENTORY}" --cohort "${COHORT}")" || exit 1
+else REPOS_TSV="$(python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${FLEET_INVENTORY}")" || exit 1; fi
 FILES=("${FLEET_RULESETS}/master.json")
 [ "${INTEGRITY}" = 1 ] && FILES+=("${FLEET_RULESETS}/master-integrity.json")
 for f in "${FILES[@]}"; do python3 -m json.tool "$f" >/dev/null || { echo "ERROR: bad JSON $f" >&2; exit 1; }; done
 
 failed=0
-while IFS=$'\t' read -r name slug main _kind _wave; do
+while IFS=$'\t' read -r name slug main _cohorts; do
+    [ -n "${name}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
     echo ""
     echo "================ ${name}  (${slug}, default branch ${main})"
@@ -84,7 +88,7 @@ print("    classic:   enforce_admins=%s linear_history=%s force_push=%s deletion
             echo "    classic protection KEPT (ruleset step failed)"; failed=1
         fi
     fi
-done < "${STATE}/fleet.tsv"
+done <<<"${REPOS_TSV}"
 
 [ "${GO}" = 1 ] || echo -e "\n(dry run - nothing changed; re-run with --go)"
 exit "${failed}"

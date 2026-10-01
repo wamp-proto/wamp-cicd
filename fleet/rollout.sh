@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# rollout.sh - drive ONE batched rollout across one wave of a fleet of repositories.
+# rollout.sh - drive ONE batched rollout across one cohort of a fleet of repositories.
 #
 # Runs on the DEV PC (it needs `gh` credentials and gitsign). The AI assistant does the
 # per-repository content work on the AI host between `cut` and `sync`; everything else is here.
 #
 #   Phase                     Where    What
 #   ------------------------  -------  -----------------------------------------------------
-#   init <name> [--wave N]    dev PC   name the rollout; freeze fleet wave N + ONE .cicd/.ai pin pair
+#   init <name> --cohort C    dev PC   name the rollout; freeze cohort C + ONE .cicd/.ai pin pair
 #   preflight                 dev PC   read-only: remotes, cleanliness, hooks, signing, branches
 #   prune                     dev PC   delete local branches already contained in upstream/master
 #   file-issues               dev PC   render one issue per repo, file it via ~/file-issue.sh
@@ -18,16 +18,22 @@
 #   open-prs                  dev PC   one PR per repo, "Closes #<issue>"
 #   status                    dev PC   one table: issue, tips, PR, checks, signature
 #   land                      dev PC   guarded local landing + push + branch cleanup
+#   finish                    dev PC   close the rollout once every repository has landed
 #
 # Every phase that changes something is a DRY RUN unless --go is given.
 # Every phase takes --only repo[,repo...] to act on a subset.
 # Phases are idempotent: re-running one skips repositories that are already done.
 #
-# init <name> [--wave N] [--cicd <sha>] [--ai <sha>]
+# init <name> --cohort <cohort> --issue-template <file> [--cicd <sha>] [--ai <sha>]
 #   <name>   a label for this rollout, e.g. wave1-2026-09 - NOT a commit. It names the state
 #            directory ($FLEET_STATE/<name>/, default ~/.fleet/<fleet>/<name>/) and appears in the issue titles.
-#   --cicd   wamp-cicd commit to pin in EVERY repository of the wave (default: current main)
-#   --ai     wamp-ai commit to pin in EVERY repository of the wave   (default: current main)
+#   --cohort the cohort of the fleet's inventory this rollout applies to (required)
+#   --issue-template  this rollout's issue text (placeholders: @@SLUG@@ @@ROLLOUT@@ @@COHORT@@ ...);
+#            copied into the rollout's state, so later edits of the file change nothing
+#   --cicd   wamp-cicd commit to pin in EVERY repository of the cohort (default: current main)
+#   --ai     wamp-ai commit to pin in EVERY repository of the cohort (default: current main)
+#   One rollout at a time per fleet: `init` refuses while another is open; `finish` closes one
+#   once every repository has landed.
 #   Both are resolved to full SHAs once, at init, and recorded; later moves of main don't matter.
 #
 # The Way-A recipes are taken from wamp-cicd AT THE ROLLOUT'S PINNED COMMIT, via a small shim
@@ -86,16 +92,14 @@ mf_set() {   # mf_set <repo> <slug> <issue> <pr>
     mv "${m}.tmp" "${m}"
 }
 
-# fleet.tsv (frozen at init): name  slug  default_branch  kind  wave
+# fleet.tsv (frozen at init; ONLY the rollout's cohort members): name  slug  default_branch  cohorts
 fleet_col() {  # fleet_col <name> <col#>
     awk -F'\t' -v r="$1" -v c="$2" '$1==r {print $c}' "$(state_dir)/fleet.tsv"
 }
 main_of() { fleet_col "$1" 3; }
-kind_of() { fleet_col "$1" 4; }
 repos() {
-    local wave r
-    wave="$(cat "$(state_dir)/wave")"
-    for r in $(awk -F'\t' -v w="${wave}" '$5==w {print $1}' "$(state_dir)/fleet.tsv"); do
+    local r
+    for r in $(cut -f1 "$(state_dir)/fleet.tsv"); do
         if [ -z "${ONLY}" ] || [[ ",${ONLY}," == *",${r},"* ]]; then echo "${r}"; fi
     done
 }
@@ -146,16 +150,25 @@ tip_is_signed() { g "$1" cat-file commit "$2" | grep -q '^gpgsig'; }
 
 cmd_init() {
     local id="${1:-}"; shift || true
-    [ -n "${id}" ] || die "usage: $0 init <rollout-name> [--wave N] [--cicd <sha>] [--ai <sha>]"
-    local cicd="" ai="" wave=1
+    local usage="usage: $0 init <rollout-name> --cohort <cohort> --issue-template <file> [--cicd <sha>] [--ai <sha>]"
+    [ -n "${id}" ] || die "${usage}"
+    local cicd="" ai="" cohort="" template=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --cicd) cicd="$2"; shift 2 ;;
             --ai)   ai="$2"; shift 2 ;;
-            --wave) wave="$2"; shift 2 ;;
+            --cohort) cohort="$2"; shift 2 ;;
+            --issue-template) template="$2"; shift 2 ;;
             *) die "unknown: $1" ;;
         esac
     done
+    [ -n "${cohort}" ] || die "${usage}"
+    [ -f "${template}" ] || die "no issue template for this rollout: --issue-template <file>  (${usage})"
+    # One rollout at a time per fleet (so: at most one open rollout per repository - overlapping
+    # cohorts must never pin a repository two ways at once).
+    if [ -f "${FLEET_STATE}/current" ] && [ "$(cat "${FLEET_STATE}/current")" != "${id}" ]; then
+        die "rollout '$(cat "${FLEET_STATE}/current")' is still open in fleet '${FLEET_NAME}': land it and run '$0 finish' first"
+    fi
     [ -n "${cicd}" ] || cicd="$(git ls-remote "${CICD_URL}" HEAD | awk '{print $1}')"
     [ -n "${ai}" ]   || ai="$(git ls-remote "${AI_URL}" HEAD | awk '{print $1}')"
 
@@ -183,28 +196,21 @@ cmd_init() {
     python3 "${FLEET_TOOLS_DIR}/lib/check-inventory.py" "${FLEET_INVENTORY}" --quiet \
         || die "fleet '${FLEET_NAME}': invalid inventory ${FLEET_INVENTORY} (failed checks above)"
     cp "${FLEET_INVENTORY}" "${d}/fleet.toml"
-    local inv_rev; inv_rev="$(git -C "$(dirname "${FLEET_INVENTORY}")" rev-parse --short HEAD 2>/dev/null || echo "not in git")"
+    # The inventory is usually a symlink into the definition repository's clone: record THAT commit.
+    local inv_rev; inv_rev="$(git -C "$(dirname "$(readlink -f "${FLEET_INVENTORY}")")" rev-parse --short HEAD 2>/dev/null || echo "not in git")"
     printf 'inventory=%s @ %s\n' "${FLEET_INVENTORY}" "${inv_rev}" >> "${d}/pins"
     note "fleet '${FLEET_NAME}': ${FLEET_INVENTORY} (${inv_rev})"
-    python3 - "${d}/fleet.toml" > "${d}/fleet.tsv" <<'PY'
-import sys
-try:
-    import tomllib
-except ImportError:              # Python < 3.11
-    import tomli as tomllib
-fleet = tomllib.load(open(sys.argv[1], "rb"))
-assert fleet.get("schema") == 1, "unsupported fleet.toml schema"
-for r in fleet["repo"]:
-    print("\t".join(str(r[k]) for k in ("name", "slug", "default_branch", "kind", "wave")))
-PY
-    echo "${wave}" > "${d}/wave"
+    python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${d}/fleet.toml" --cohort "${cohort}" > "${d}/fleet.tsv" \
+        || die "fleet '${FLEET_NAME}': cannot select cohort '${cohort}'"
+    echo "${cohort}" > "${d}/cohort"
+    cp "${template}" "${d}/issue-template.md"
     local members
-    members="$(awk -F'\t' -v w="${wave}" '$5==w {print $1}' "${d}/fleet.tsv" | tr '\n' ' ')"
-    [ -n "${members}" ] || die "fleet has no repositories in wave ${wave}"
+    members="$(cut -f1 "${d}/fleet.tsv" | tr '\n' ' ')"
+    [ -n "${members}" ] || die "cohort '${cohort}' of fleet '${FLEET_NAME}' has no repositories"
 
     touch "${d}/manifest.tsv"
     echo "${id}" > "${FLEET_STATE}/current"
-    note "rollout ${id}: wave ${wave} = ${members}"
+    note "rollout ${id}: cohort ${cohort} = ${members}"
     note "pins: .cicd -> ${cicd:0:7}, .ai -> ${ai:0:7}  (state: ${d})"
 }
 
@@ -239,7 +245,7 @@ cmd_preflight() {
         for rem in upstream origin ${EXCHANGE}; do
             g "${r}" fetch -q --prune "${rem}" 2>/dev/null || warn "could not fetch ${rem}"
         done
-        echo "   slug:        $(slug "${r}")   fork: $(fork_owner "${r}")   default: ${m} ($(kind_of "${r}"))"
+        echo "   slug:        $(slug "${r}")   fork: $(fork_owner "${r}")   default: ${m}"
         # The fleet is a claim; the remotes are the facts. Disagreement is a blocker.
         if [ "$(gh_slug "${r}" upstream)" != "$(slug "${r}")" ]; then
             warn "upstream remote is $(gh_slug "${r}" upstream), fleet.toml says $(slug "${r}")"
@@ -321,7 +327,8 @@ cmd_prune() {
 }
 
 cmd_file_issues() {
-    [ -f "${ISSUE_TEMPLATE}" ] || die "no issue template for this rollout: set ISSUE_TEMPLATE (example: ${FLEET_TOOLS_DIR}/examples/issue-template-wamp-wave1.md)"
+    local ISSUE_TEMPLATE; ISSUE_TEMPLATE="$(state_dir)/issue-template.md"
+    [ -f "${ISSUE_TEMPLATE}" ] || die "rollout $(current_rollout) has no issue template (init --issue-template <file>)"
     local r s draft out num cicd ai waya fleet_list cicd_verb
     cicd="$(pin cicd)"; ai="$(pin ai)"
     fleet_list="$(repos | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
@@ -341,7 +348,7 @@ cmd_file_issues() {
             -e "s|@@CICD@@|${cicd}|g" -e "s|@@AI@@|${ai}|g" \
             -e "s|@@CICD7@@|${cicd:0:7}|g" -e "s|@@AI7@@|${ai:0:7}|g" \
             -e "s|@@WAYA_NOTE@@|${waya}|g" -e "s|@@MAIN@@|$(main_of "${r}")|g" \
-            -e "s|@@WAVE@@|$(cat "$(state_dir)/wave")|g" -e "s|@@FLEET_LIST@@|${fleet_list}|g" \
+            -e "s|@@COHORT@@|$(cat "$(state_dir)/cohort")|g" -e "s|@@FLEET_LIST@@|${fleet_list}|g" \
             -e "s|@@CICD_VERB@@|${cicd_verb}|g" "${ISSUE_TEMPLATE}" > "${draft}"
         # Keep the title: file-issue.sh ARCHIVES the draft once filed, and `open-prs` titles each
         # pull request like its issue.
@@ -439,7 +446,7 @@ cmd_open_prs() {
                    --title "$(pr_title "${r}" "${n}")" \
                    --body "Closes #${n}
 
-Part of the batched fleet rollout \`$(current_rollout)\` (the same pins in every repository of the wave):
+Part of the batched fleet rollout \`$(current_rollout)\` (the same pins in every repository of its cohort):
 \`.cicd\` → \`$(pin cicd | cut -c1-7)\`, \`.ai\` → \`$(pin ai | cut -c1-7)\`.
 See #${n} for the change list and acceptance criteria. The AI-assistance disclosure is in \`.audit/\`.")"
             pr="$(echo "${out}" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | tail -1)"
@@ -493,6 +500,8 @@ cmd_land() {
         for rem in $(g "${r}" remote); do g "${r}" fetch -q --prune "${rem}" 2>/dev/null || true; done
 
         if g "${r}" merge-base --is-ancestor "${b}" "upstream/${m}" 2>/dev/null; then
+            grep -q "^${r}	" "$(state_dir)/landed.tsv" 2>/dev/null \
+                || printf '%s\t%s\n' "${r}" "$(g "${r}" rev-parse "${b}")" >> "$(state_dir)/landed.tsv"
             note "${r}: already contained in upstream/${m}"; continue
         fi
 
@@ -546,12 +555,39 @@ cmd_land() {
         for rem in origin ${EXCHANGE}; do
             g "${r}" push -q "${rem}" --delete "${b}" 2>/dev/null || warn "could not delete ${b} on ${rem}"
         done
+        # The record `finish` reads: this repository landed, and with which tip.
+        printf '%s\t%s\n' "${r}" "${tip}" >> "$(state_dir)/landed.tsv"
         note "${r}: landed; ${m} is now $(g "${r}" rev-parse --short HEAD)"
     done
 }
 
+# Close the rollout: only when EVERY repository of its cohort has landed (recorded by `land`, and
+# still contained in the upstream default branch). Then another rollout may be started.
+cmd_finish() {
+    local r m tip open=0
+    for r in $(repos); do
+        m="$(main_of "${r}")"
+        tip="$(awk -F'\t' -v r="${r}" '$1==r {print $2}' "$(state_dir)/landed.tsv" 2>/dev/null | tail -1)"
+        if [ -z "${tip}" ]; then note "${r}: NOT landed"; open=$((open+1)); continue; fi
+        g "${r}" fetch -q upstream 2>/dev/null || true
+        if g "${r}" merge-base --is-ancestor "${tip}" "upstream/${m}" 2>/dev/null; then
+            note "${r}: landed (${tip:0:7} in upstream/${m})"
+        else
+            note "${r}: recorded as landed, but upstream/${m} does not contain ${tip:0:7}"; open=$((open+1))
+        fi
+    done
+    [ "${open}" -eq 0 ] || die "rollout $(current_rollout): ${open} repository(ies) not landed - it stays open"
+    if [ "${GO}" = 1 ]; then
+        local id; id="$(current_rollout)"
+        rm -f "${FLEET_STATE}/current"
+        note "rollout ${id}: finished (its state stays in ${FLEET_STATE}/${id})"
+    else
+        echo "    [dry-run] close rollout $(current_rollout)"
+    fi
+}
+
 usage() {
-    sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -581,5 +617,6 @@ case "${cmd}" in
     open-prs)    cmd_open_prs ;;
     status)      cmd_status ;;
     land)        cmd_land ;;
+    finish)      cmd_finish ;;
     *) usage 1 ;;
 esac

@@ -36,7 +36,7 @@ fleet-rulesets *args: (_fleet "rulesets.sh" args)
 # Organisations you administer: status | settings [go] | rulesets <org> [go] | transfer <from> <to> [go]
 fleet-org *args: (_fleet "org.sh" args)
 
-# Install file-issue.sh, file-comment.sh (copies) and pr-ci.sh (wrapper) into ~/.local/bin [go]
+# Link the personal tools as ~/.local/bin/wamp-cicd-{file-issue,file-comment,pr-ci}.sh (symlinks into this clone) [go]
 fleet-install-tools *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -47,25 +47,27 @@ fleet-install-tools *args:
             *)  echo "ERROR: unexpected word '$1'" >&2; exit 2 ;;
         esac; shift
     done
-    dest="${HOME}/.local/bin"
-    # file-issue.sh, file-comment.sh: self-contained, installed as copies.
-    for t in file-issue.sh file-comment.sh; do
+    # Symlinks must point into a STANDALONE wamp-cicd clone: a link into some repository's .cicd/
+    # submodule would change with that repository's pin and checked-out branch.
+    if [ -n "$(git -C "{{FLEET_TOOLS}}" rev-parse --show-superproject-working-tree 2>/dev/null)" ]; then
+        echo "REFUSING: {{FLEET_TOOLS}} is inside a git submodule; run this from a standalone wamp-cicd clone" >&2; exit 1
+    fi
+    dest="${HOME}/.local/bin"; blocked=0
+    for t in file-issue.sh file-comment.sh pr-ci.sh; do
+        link="${dest}/wamp-cicd-${t}"; target="{{FLEET_TOOLS}}/${t}"
+        if [ -e "${link}" ] && [ ! -L "${link}" ]; then
+            # Never touch a regular file: it is not ours to replace.
+            echo "BLOCKED ${link}: exists and is not a symlink - remove it yourself, then re-run"; blocked=1; continue
+        fi
+        if [ -L "${link}" ] && [ "$(readlink "${link}")" = "${target}" ]; then echo "ok      ${link} -> ${target}"; continue; fi
         if [ "${go}" = 1 ]; then
-            mkdir -p "${dest}" && install -m 755 "{{FLEET_TOOLS}}/${t}" "${dest}/${t}" && echo "installed ${dest}/${t}"
+            mkdir -p "${dest}" && ln -sfn "${target}" "${link}" && echo "linked  ${link} -> ${target}"
         else
-            echo "[dry-run] install {{FLEET_TOOLS}}/${t} -> ${dest}/${t}"
+            echo "[dry-run] link ${link} -> ${target}$([ -L "${link}" ] && echo "  (re-point from $(readlink "${link}"))")"
         fi
     done
-    # pr-ci.sh needs the fleet configuration code beside it: installed as a wrapper that runs it
-    # from this checkout (so it follows the checkout; re-install after moving it).
-    if [ "${go}" = 1 ]; then
-        mkdir -p "${dest}"
-        printf '#!/usr/bin/env bash\n# Installed by `just fleet-install-tools go`: runs pr-ci.sh from the wamp-cicd checkout.\nexec bash %q "$@"\n' \
-            "{{FLEET_TOOLS}}/pr-ci.sh" > "${dest}/pr-ci.sh" && chmod 755 "${dest}/pr-ci.sh" && echo "installed ${dest}/pr-ci.sh (-> {{FLEET_TOOLS}}/pr-ci.sh)"
-    else
-        echo "[dry-run] install ${dest}/pr-ci.sh (wrapper -> {{FLEET_TOOLS}}/pr-ci.sh)"
-    fi
     [ "${go}" = 1 ] || echo "(dry run - nothing changed; add 'go' as the last word)"
+    [ "${blocked}" = 0 ] || exit 1
     case ":${PATH}:" in *":${dest}:"*) ;; *) echo "note: ${dest} is not on your PATH" ;; esac
 
 # Translate the words and run a script from this directory. `go` is only valid LAST.

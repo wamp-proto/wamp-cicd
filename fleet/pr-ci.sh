@@ -121,20 +121,19 @@ pr_ci_main() {
     command -v gh >/dev/null && gh auth status >/dev/null 2>&1 || { echo "ERROR: gh missing or not authenticated" >&2; return 1; }
 
     # Which fleet: FLEET_NAME, or the one whose inventory lists this repository.
-    local tools cdir e n inv matches=() rname
+    local tools cdir e matches=() rname
     tools="$(dirname "$(readlink -f "$0")")"
     if [ -z "${FLEET_NAME:-}" ]; then
-        cdir="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet}"
-        for e in "${cdir}"/*.env; do
+        # The inventories are the <fleet>.toml files of the fleet configuration directory.
+        cdir="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/wamp-cicd/fleet}"
+        for e in "${cdir}"/*.toml; do
             [ -f "${e}" ] || continue
-            n="$(basename "${e}" .env)"
-            inv="$( (FLEET_NAME="${n}"; . "${tools}/lib/config.sh" >/dev/null 2>&1 && echo "${FLEET_INVENTORY}") || true)"
-            [ -f "${inv}" ] && _pr_ci_repo_name "${inv}" "${slug}" >/dev/null && matches+=("${n}")
+            _pr_ci_repo_name "${e}" "${slug}" >/dev/null 2>&1 && matches+=("$(basename "${e}" .toml)")
         done
         case "${#matches[@]}" in
             1) FLEET_NAME="${matches[0]}" ;;
             0) echo "ERROR: ${slug} is in no fleet (no inventory under ${cdir} lists it); pr-ci.sh only handles fleet repositories" >&2; return 1 ;;
-            *) echo "ERROR: ${slug} is in several fleets (${matches[*]}); set FLEET_NAME" >&2; return 1 ;;
+            *) echo "ERROR: ${slug} is in several fleets (${matches[*]}) - a repository belongs to exactly one; set FLEET_NAME" >&2; return 1 ;;
         esac
     fi
     export FLEET_NAME

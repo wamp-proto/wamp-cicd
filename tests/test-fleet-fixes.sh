@@ -29,7 +29,7 @@ fail() { echo "  FAIL $1"; failed=$((failed+1)); }
 # prefers over $HOME/.config - so the throwaway HOME alone does not isolate the fleet config.
 unset XDG_CONFIG_HOME
 export HOME="${WORK}/home" GIT_CONFIG_GLOBAL="${WORK}/gitconfig" GIT_CONFIG_SYSTEM=/dev/null
-export FLEET_CONFIG_DIR="${HOME}/.config/fleet"
+export FLEET_CONFIG_DIR="${HOME}/.config/wamp-cicd/fleet"
 mkdir -p "${HOME}" "${WORK}/bin" "${WORK}/canned"
 git config --global user.name T; git config --global user.email t@example.invalid
 git config --global init.defaultBranch master
@@ -85,17 +85,19 @@ out="$(bash "${F}/org.sh" transfer acme target 2>&1)"
 grep -q 'SKIP - target/r1 already exists' <<<"$out" && ok "exact full_name (any case) -> SKIP" || fail "real exists: $out"
 
 # a fleet with one repository, configured like a user would, and a rollout state
-mkdir -p "${HOME}/.config/fleet" "${WORK}/state/r1" "${WORK}/work"
-cat > "${HOME}/.config/fleet/t.env" <<EOF
-FLEET_INVENTORY=${WORK}/fleet.toml
+mkdir -p "${FLEET_CONFIG_DIR}" "${WORK}/state/r1" "${WORK}/work"; chmod 700 "${FLEET_CONFIG_DIR}"
+printf 'schema = 2\n[[cohort]]\nname = "core"\ndescription = "test"\n[[repo]]\nname = "widget"\nslug = "acme/widget"\ndefault_branch = "master"\ncohorts = ["core"]\n' > "${WORK}/fleet.toml"
+ln -s "${WORK}/fleet.toml" "${FLEET_CONFIG_DIR}/t.toml"
+cat > "${FLEET_CONFIG_DIR}/t.env" <<EOF
 FLEET_WORK_DIR=${WORK}/work
 FLEET_STATE=${WORK}/state
 FLEET_CI_DIR=${WORK}/ci
 EXCHANGE=exch
 EOF
-chmod 600 "${HOME}/.config/fleet/t.env"
-echo r1 > "${WORK}/state/current"; echo 1 > "${WORK}/state/r1/wave"
-printf 'widget\tacme/widget\tmaster\tpython\t1\n' > "${WORK}/state/r1/fleet.tsv"
+chmod 600 "${FLEET_CONFIG_DIR}/t.env"
+# a rollout's frozen state: its cohort's members only (name, slug, default branch, cohorts)
+echo r1 > "${WORK}/state/current"; echo core > "${WORK}/state/r1/cohort"
+printf 'widget\tacme/widget\tmaster\tcore\n' > "${WORK}/state/r1/fleet.tsv"
 printf 'widget\tacme/widget\t5\t8\n' > "${WORK}/state/r1/manifest.tsv"
 
 echo "== D. ci-results.sh: failed job of an IN-PROGRESS run gets its log"

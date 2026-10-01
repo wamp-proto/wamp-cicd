@@ -38,7 +38,6 @@ command -v gh >/dev/null && gh auth status >/dev/null 2>&1 || { echo "ERROR: gh 
 [ -f "${FLEET_STATE}/current" ] || { echo "ERROR: no rollout initialised" >&2; exit 1; }
 ROLLOUT="$(cat "${FLEET_STATE}/current")"
 STATE="${FLEET_STATE}/${ROLLOUT}"
-WAVE="$(cat "${STATE}/wave")"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 NAME="${ROLLOUT}-${STAMP}"
 OUT="${FLEET_CI_DIR}/${NAME}"
@@ -50,8 +49,8 @@ mkdir -p "${OUT}"
 PR_CI_FULL="${FULL}"; PR_CI_RERUN="${RERUN}"
 
 ROWS=()
-while IFS=$'\t' read -r name slug _main _kind wave; do
-    [ "${wave}" = "${WAVE}" ] || continue
+while IFS=$'\t' read -r name slug _main _cohorts; do
+    [ -n "${name}" ] || continue
     if [ -n "${ONLY}" ] && [[ ",${ONLY}," != *",${name},"* ]]; then continue; fi
     pr="$(awk -F'\t' -v r="${name}" '$1==r {print $4}' "${STATE}/manifest.tsv" | tail -1)"
     issue="$(awk -F'\t' -v r="${name}" '$1==r {print $3}' "${STATE}/manifest.tsv" | tail -1)"
