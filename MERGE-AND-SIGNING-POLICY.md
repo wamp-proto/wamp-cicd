@@ -253,12 +253,17 @@ skipped.
 3. **Automation cannot sign, and must not try.** Keyless signing binds an OIDC
    identity; an automated assistant producing one would be impersonating a
    person. Every merge is a human act at the control node.
-4. **A branch that changes `.cicd` or `.ai` cannot be landed by `just land`.**
-   Checking out the integration branch restores the submodule revisions *it*
-   records, so such a branch swaps the recipe out half way through its own
-   landing. `land` detects this and says so; land that one through the forge,
-   and every branch after it can use `just land`. This happens exactly once per
-   repository and is what bootstrapping means, not a defect.
+4. **A branch that moves a tooling pin lands like any other; only the bootstrap does not.**
+   Checking out the integration branch restores the submodule revisions *it* records, so a
+   branch that changes `.cicd`, `.ai` or any other submodule sees the older tooling come back
+   half way through its own landing. That is harmless: the landing reads everything it needs
+   before that checkout and invokes nothing afterwards (`wamp-cicd#32`), and `land` therefore
+   makes the signed merge for such branches too (`wamp-cicd#51`). This matters because under
+   fleet rollouts *every* branch moves a pin, and the forge's merge button cannot make the
+   maintainer's signed merge. What `land` still refuses is the bootstrap proper: an integration
+   branch whose pinned commit hook cannot yet admit a maintainer's merge (point 5). `land`
+   detects exactly that from the hook the integration branch pins, and says so; that one branch
+   lands through the forge, once per repository.
 5. **A hook that refuses all commits on the integration branch blocks this.**
    Measured 2026-08-22: a `commit-msg` hook written to keep AI assistants off
    `main` refuses *every* commit there, maintainer merges included, and the

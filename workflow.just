@@ -1754,37 +1754,67 @@ land branch='':
 
     pr_note=""
     if [ "${landed}" = 0 ]; then
-        # DOES THIS BRANCH CHANGE THE FILE THIS RECIPE COMES FROM? (#32)
+        # CAN {{WORKFLOW_MAIN}} TAKE A MAINTAINER MERGE AT ALL? (#51)
         #
-        # Checking out {{WORKFLOW_MAIN}} restores the submodule revisions it
-        # records, so a branch that bumps `.cicd` swaps `workflow.just` back to
-        # the old copy MID-RUN - and the rest of the landing then executes code
-        # the operator had already replaced. Observed 2026-08-23: a second
-        # attempt printed a refusal in the voice of the version being retired.
+        # This used to refuse ANY branch that changes `.cicd` or `.ai`, for two
+        # reasons folded into one, and only one of them is still true.
         #
-        # This is not a defect to fix, it is what bootstrapping means, and it
-        # happens exactly once per repository. It is worth SAYING rather than
-        # letting someone discover it through three refusals.
-        selfmod="$(git diff --name-only \
-            "${base_remote}/{{WORKFLOW_MAIN}}...${branch}" -- .cicd .ai 2>/dev/null || true)"
-        if [ -n "${selfmod}" ]; then
-            echo "" >&2
-            echo "REFUSING: ${branch} changes $(echo ${selfmod} | tr '\n' ' ')- where this" >&2
-            echo "  recipe and the commit hooks come from." >&2
-            echo "" >&2
-            echo "  Landing it here would swap them out half way through, and the" >&2
-            echo "  copy on {{WORKFLOW_MAIN}} cannot make a signed merge yet -" >&2
-            echo "  that is what this branch installs." >&2
-            echo "" >&2
-            echo "  Land this one through the forge: merge the pull request there," >&2
-            echo "  then:" >&2
-            echo "" >&2
-            echo "    git checkout {{WORKFLOW_MAIN}} && git pull --ff-only ${base_remote} {{WORKFLOW_MAIN}}" >&2
-            echo "    git submodule update --init --recursive" >&2
-            echo "" >&2
-            echo "  Every branch after it can use 'just land'." >&2
-            echo "" >&2
-            exit 1
+        # 1. "The recipe is swapped mid-run": checking out {{WORKFLOW_MAIN}}
+        #    restores the submodule revisions it records, so `workflow.just`
+        #    goes back to the old copy. True - and harmless since #32:
+        #    `_workflow-merge-signed` reads everything it needs BEFORE its
+        #    checkout and never invokes `just` afterwards, and this script is
+        #    already rendered. A moving tooling pin under it changes nothing.
+        #
+        # 2. "{{WORKFLOW_MAIN}} cannot make a signed merge yet": its commit-msg
+        #    hook predates merge admission and refuses every commit there. That
+        #    is the bootstrap, once per repository, and it has nothing to do
+        #    with whether THIS branch touches a pin.
+        #
+        # Refusing on (1) meant every branch that moves a tooling pin had to
+        # land through the forge's merge button - and under rollouts every
+        # branch moves one (`.fleet`, often `.cicd`). The forge cannot make the
+        # maintainer's signed merge, so the one commit the policy is about
+        # could not be made. Hit again landing a `.cicd` bump in both fleet
+        # definition repositories; "it happens exactly once per repository"
+        # was no longer true.
+        #
+        # So: ask the question that matters. The hook that will run is the one
+        # {{WORKFLOW_MAIN}} PINS (`_workflow-merge-signed` restores the
+        # submodules there before it merges). A hook that admits a maintainer
+        # merge looks at MERGE_HEAD; one that does not, cannot.
+        ai_pin="$(git ls-tree "${base_remote}/{{WORKFLOW_MAIN}}" .ai 2>/dev/null | awk '{print $3}')"
+        if [ -n "${ai_pin}" ] && [ -e .ai/.git ]; then
+            hook="$(git -C .ai show "${ai_pin}:.githooks/commit-msg" 2>/dev/null || true)"
+            if [ -z "${hook}" ]; then
+                # The pinned commit may simply not be fetched here yet.
+                git -C .ai fetch --quiet 2>/dev/null || true
+                hook="$(git -C .ai show "${ai_pin}:.githooks/commit-msg" 2>/dev/null || true)"
+            fi
+            # Unknown is not "no": if the pinned hook cannot be read, the merge
+            # is attempted, and `_workflow-merge-signed` aborts it cleanly and
+            # says why if a hook does refuse.
+            if [ -n "${hook}" ] && ! grep -q 'MERGE_HEAD' <<<"${hook}"; then
+                echo "" >&2
+                echo "REFUSING: {{WORKFLOW_MAIN}} cannot take a maintainer's merge yet." >&2
+                echo "" >&2
+                echo "  The commit hook {{WORKFLOW_MAIN}} pins (.ai at ${ai_pin:0:7}) refuses every" >&2
+                echo "  commit on {{WORKFLOW_MAIN}}: it predates the merge policy and cannot" >&2
+                echo "  tell a maintainer's signed merge from an ordinary commit." >&2
+                echo "  This is the bootstrap, once per repository - not anything" >&2
+                echo "  ${branch} does." >&2
+                echo "" >&2
+                echo "  Land the branch that brings the newer .ai through the forge:" >&2
+                echo "  merge the pull request there, then:" >&2
+                echo "" >&2
+                echo "    git checkout {{WORKFLOW_MAIN}} && git pull --ff-only ${base_remote} {{WORKFLOW_MAIN}}" >&2
+                echo "    git submodule update --init --recursive" >&2
+                echo "" >&2
+                echo "  Every branch after it lands with 'just land', including ones" >&2
+                echo "  that move .cicd, .ai or any other submodule pin." >&2
+                echo "" >&2
+                exit 1
+            fi
         fi
 
         # ASKED BEFORE ANYTHING MOVES. This is the whole point of #32: a
