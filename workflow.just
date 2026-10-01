@@ -1140,7 +1140,11 @@ new-branch issue:
     # exist in this estate came about.
     if [ -f "${root}/.ai/justfile" ]; then
         just --justfile "${root}/.ai/justfile" generate-audit-file >/dev/null
-        audit="$(git status --porcelain | awk '/\.audit\// {print $2}' | head -1)"
+        # -uall: in a repository that does not track `.audit/` yet (its FIRST branch
+        # here), plain --porcelain reports the untracked DIRECTORY `.audit/`, not the
+        # file inside it - and the `sed` below then fails on a directory, leaving the
+        # branch created with nothing committed or pushed (#51).
+        audit="$(git status --porcelain -uall | awk '/\.audit\// {print $2}' | head -1)"
         if [ -n "${audit}" ]; then
             sed -i "s|^Related issue(s):.*|Related issue(s): #{{issue}}|" "${audit}"
             git add "${audit}"
