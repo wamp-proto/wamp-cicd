@@ -13,11 +13,13 @@
 #      (restore any branch:  git fetch <bundle> 'refs/heads/<name>:refs/heads/<name>')
 #   3. delete those local branches (git branch -D) - remote copies are NOT touched
 #   4. signing, as in autobahn-python: gpg.format=x509, gpg.x509.program=gitsign, commit.gpgsign=true
-#   5. hooks: core.hooksPath=.ai/.githooks (initializing the .ai submodule if needed)
+#   5. hooks: core.hooksPath=.ai/.githooks (initializing the .ai submodule if needed); in a
+#      tooling source .deps/wamp-ai/.githooks (deps.sh sync), in wamp-ai itself .githooks
 
 set -euo pipefail
 # shellcheck source=lib/config.sh
 . "$(dirname "$(readlink -f "$0")")/lib/config.sh"
+. "${FLEET_TOOLS_DIR}/lib/aidir.sh"
 
 GO=0
 ONLY=""
@@ -94,11 +96,23 @@ while IFS=$'\t' read -r name _slug main _cohorts; do
     setcfg "${d}" gpg.x509.program gitsign
     setcfg "${d}" commit.gpgsign true
 
-    if [ ! -d "${d}/.ai/.githooks" ]; then
-        echo "    .ai       not initialised -> git submodule update --init .ai"
-        run git -C "${d}" submodule update --init .ai
-    fi
-    setcfg "${d}" core.hooksPath .ai/.githooks
+    # The hooks: the .ai submodule - or, in a tooling source, the pinned checkout .deps/wamp-ai
+    # (deps.toml), or wamp-ai's own .githooks/ (lib/aidir.sh).
+    case "$(ai_dir "${d}")" in
+        .ai)
+            if [ ! -d "${d}/.ai/.githooks" ]; then
+                echo "    .ai       not initialised -> git submodule update --init .ai"
+                run git -C "${d}" submodule update --init .ai
+            fi ;;
+        .deps/wamp-ai)
+            if [ ! -d "${d}/.deps/wamp-ai/.githooks" ]; then
+                echo "    .deps     not populated -> deps.sh sync"
+                run bash "${FLEET_TOOLS_DIR}/../scripts/deps.sh" sync --root "${d}"
+            fi ;;
+        .)  ;;
+        *)  echo "    hooks     NONE: no .ai, no pinned wamp-ai (deps.toml) - nothing to switch on"; continue ;;
+    esac
+    setcfg "${d}" core.hooksPath "$(ai_hooks_path "${d}")"
 done < "${STATE}/fleet.tsv"
 
 echo ""

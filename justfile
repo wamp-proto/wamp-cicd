@@ -69,18 +69,26 @@ deploy-github-templates:
 check-community-files:
     bash scripts/community-files.sh check ..
 
+# Make `.deps/` what `deps.toml` says: this repository's dependencies as plain checkouts at pinned commits - it carries no submodules (see TOOLING-STRUCTURE.md).
+deps *args:
+    bash scripts/deps.sh sync {{args}}
+
 # Run the unit tests: composite-action shell logic, and the workflow recipes
 # themselves, both against crafted fixtures rather than against this checkout.
 test:
     #!/usr/bin/env bash
     # pipefail: the sandboxes are piped through `tail -1`, which must not hide their failure.
     set -eo pipefail
+    # The tests run the REAL wamp-ai justfile and commit-msg hook, at the commit deps.toml pins.
+    bash scripts/deps.sh check || { echo "run: just deps" >&2; exit 1; }
+    bash tests/test-deps.sh
     bash tests/test-check-release-fileset.sh
     bash tests/test-new-branch-collision.sh
     bash tests/test-new-branch-audit.sh
     bash tests/test-audit-file.sh
     bash tests/test-workflow-signing.sh
     bash tests/test-land-tooling-pins.sh
+    bash tests/test-ai-dir.sh
     bash tests/test-where-output.sh
     bash tests/test-pr-lookup.sh
     bash tests/test-signing-scope.sh

@@ -18,12 +18,15 @@
 #   CICD_DIR          a local wamp-cicd clone             [the clone these tools run from]
 #   FILE_ISSUE        the issue-filing command             [file-issue.sh beside these tools]
 #   FLEET_RULESETS    directory of ruleset JSON files                    [fleet/rulesets]
+#   FLEET_DEF_URL     forge URL of the fleet's definition repository: what members record for
+#                     .fleet/ (or in deps.toml). Needed where the definition clone has no forge
+#                     remote (a host without forge credentials)   [none: derived from the clone]
 # Set by this file, not configurable: FLEET_INVENTORY (= <fleet>.toml beside the .env).
 
 FLEET_TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FLEET_CONFIG_DIR="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/wamp-cicd/fleet}"
 
-FLEET_CONFIG_KEYS="EXCHANGE UPLOAD_TO FLEET_WORK_DIR FLEET_STATE FLEET_CI_DIR CICD_URL AI_URL CICD_DIR FILE_ISSUE FLEET_RULESETS"
+FLEET_CONFIG_KEYS="EXCHANGE UPLOAD_TO FLEET_WORK_DIR FLEET_STATE FLEET_CI_DIR CICD_URL AI_URL CICD_DIR FILE_ISSUE FLEET_RULESETS FLEET_DEF_URL"
 
 # The fleets configured here: every <name>.toml (and a lone <name>.env counts too, so its
 # missing inventory is reported rather than the fleet being invisible).
@@ -82,5 +85,6 @@ AI_URL="${AI_URL:-https://github.com/wamp-proto/wamp-ai.git}"
 CICD_DIR="${CICD_DIR:-$(dirname "${FLEET_TOOLS_DIR}")}"
 FILE_ISSUE="${FILE_ISSUE:-${FLEET_TOOLS_DIR}/file-issue.sh}"
 FLEET_RULESETS="${FLEET_RULESETS:-${FLEET_TOOLS_DIR}/rulesets}"
+FLEET_DEF_URL="${FLEET_DEF_URL:-}"
 for _k in ${_fleet_keys}; do unset "_env_${_k}" "_had_${_k}"; done
 unset _names _n _cfg _k _fleet_keys
