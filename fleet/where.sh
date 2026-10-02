@@ -8,7 +8,7 @@
 #
 # Read-only: fetches the remotes, changes nothing else. Per repository it checks
 #   branch / clean / default branch == upstream == exchange     (in sync everywhere?)
-#   core.hooksPath=.ai/.githooks                                 (policy hooks enforced?)
+#   core.hooksPath=.ai/.githooks (or .deps/wamp-ai, lib/aidir.sh) (policy hooks enforced?)
 #   gpg.format=x509, gpg.x509.program=gitsign, commit.gpgsign    (maintainer signing ready?)
 #   submodules at their pinned revision, .cicd / .ai pins        (fleet-consistent?)
 #   `.cicd/scripts/community-files.sh check .`                   (managed files unchanged?)
@@ -17,6 +17,7 @@
 set -uo pipefail
 # shellcheck source=lib/config.sh
 . "$(dirname "$(readlink -f "$0")")/lib/config.sh"
+. "${FLEET_TOOLS_DIR}/lib/aidir.sh"
 
 WHERE=0; COHORT=""; ONLY=""
 while [ $# -gt 0 ]; do
@@ -54,7 +55,8 @@ while IFS=$'\t' read -r name _slug main _cohorts; do
     if [ -n "${l}" ] && [ "${l}" = "${u}" ] && [ "${u}" = "${x}" ]; then sync="yes ${l:0:7}"
     else sync="NO"; PROBLEMS+=("${name}: ${main} ${l:0:7} / upstream ${u:0:7} / ${EXCHANGE} ${x:0:7} differ"); fi
 
-    [ "$(cfg "${d}" core.hooksPath)" = ".ai/.githooks" ] && hooks=yes || { hooks=NO; PROBLEMS+=("${name}: core.hooksPath is '$(cfg "${d}" core.hooksPath)'"); }
+    [ "$(cfg "${d}" core.hooksPath)" = "$(ai_hooks_path "${d}")" ] && [ -d "${d}/$(ai_hooks_path "${d}")" ] && hooks=yes \
+        || { hooks=NO; PROBLEMS+=("${name}: core.hooksPath is '$(cfg "${d}" core.hooksPath)', should be $(ai_hooks_path "${d}") (and exist)"); }
     if [ "$(cfg "${d}" gpg.format)" = x509 ] && [ "$(cfg "${d}" gpg.x509.program)" = gitsign ] \
        && [ "$(cfg "${d}" commit.gpgsign)" = true ] && command -v gitsign >/dev/null; then sign=gitsign
     else sign=NO; PROBLEMS+=("${name}: signing not configured (gpg.format=$(cfg "${d}" gpg.format) gpg.x509.program=$(cfg "${d}" gpg.x509.program) commit.gpgsign=$(cfg "${d}" commit.gpgsign))"); fi
@@ -62,8 +64,21 @@ while IFS=$'\t' read -r name _slug main _cohorts; do
     cicd="$(git -C "${d}" ls-tree "${main}" .cicd 2>/dev/null | awk '{print substr($3,1,7)}')"
     ai="$(git -C "${d}" ls-tree "${main}" .ai 2>/dev/null | awk '{print substr($3,1,7)}')"
     [ -z "$(git -C "${d}" submodule status 2>/dev/null | grep -E '^[-+U]')" ] && sub=pinned || { sub=OFF; PROBLEMS+=("${name}: submodules not at their pinned revision (git submodule update --init --recursive)"); }
-    if [ -f "${d}/.cicd/scripts/community-files.sh" ]; then
-        (cd "${d}" && bash .cicd/scripts/community-files.sh check . >/dev/null 2>&1) && comm=ok || { comm=DRIFT; PROBLEMS+=("${name}: community files drifted"); }
+    # A tooling source carries no submodules: its pins are in deps.toml, its checkouts in .deps/.
+    if [ -f "${d}/deps.toml" ]; then
+        DEPS_SH="${FLEET_TOOLS_DIR}/../scripts/deps.sh"
+        [ -n "${cicd}" ] || cicd="$(bash "${DEPS_SH}" get --root "${d}" wamp-cicd 2>/dev/null | cut -c1-7 || true)"
+        [ -n "${ai}" ]   || ai="$(bash "${DEPS_SH}" get --root "${d}" wamp-ai 2>/dev/null | cut -c1-7 || true)"
+        bash "${DEPS_SH}" check --root "${d}" >/dev/null 2>&1 || { sub=OFF; PROBLEMS+=("${name}: .deps/ is not what deps.toml says (just deps)"); }
+    fi
+    # The community files check, from wherever this repository has wamp-cicd: the submodule, the
+    # pinned checkout, or - wamp-cicd itself - its own scripts/ and templates/.
+    cf=""
+    for c in .cicd .deps/wamp-cicd .; do
+        if [ -f "${d}/${c}/scripts/community-files.sh" ] && [ -d "${d}/${c}/templates" ]; then cf="${c}/scripts/community-files.sh"; break; fi
+    done
+    if [ -n "${cf}" ]; then
+        (cd "${d}" && bash "${cf}" check . >/dev/null 2>&1) && comm=ok || { comm=DRIFT; PROBLEMS+=("${name}: community files drifted"); }
     else comm="-"; fi
     (cd "${d}" && timeout 60 just where >/dev/null 2>&1) && jw=ok || { jw=FAILS; PROBLEMS+=("${name}: 'just where' fails"); }
 

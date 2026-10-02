@@ -8,7 +8,7 @@ See also: [AI Support Module](https://github.com/wamp-proto/wamp-ai)
 
 ## What this module decides
 
-Three documents, and the recipes that implement them. A using repository gets
+Four documents, and the recipes that implement them. A using repository gets
 all of them by carrying this submodule, which is the point: a rule that lives
 one `git clone` away from the repositories that must follow it is a rule those
 repositories cannot check themselves against.
@@ -18,6 +18,7 @@ repositories cannot check themselves against.
 | [SCM-EXCHANGE-MODEL.md](SCM-EXCHANGE-MODEL.md) | how work is staged between a control node, a private exchange, AI assistants and the forge — and what every remote is called |
 | [MERGE-AND-SIGNING-POLICY.md](MERGE-AND-SIGNING-POLICY.md) | how an approved branch becomes protected history: merge commits only, made and signed by the maintainer rather than by the forge |
 | [SLSA.md](SLSA.md) | the build-provenance target and what is still missing for it |
+| [TOOLING-STRUCTURE.md](TOOLING-STRUCTURE.md) | how a repository gets the shared tooling: as submodules (`.ai/`, `.cicd/`, `.fleet/`) - and why this repository and wamp-ai, which _are_ that tooling, carry none and use pinned checkouts instead (`deps.toml`, `.deps/`, `just deps`) |
 
 [`workflow.just`](workflow.just) implements the first two — `just where`,
 `just new-branch`, `just publish`, `just land`. It implements; they decide.

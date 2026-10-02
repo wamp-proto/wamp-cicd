@@ -25,6 +25,7 @@
 set -uo pipefail
 # shellcheck source=lib/config.sh
 . "$(dirname "$(readlink -f "$0")")/lib/config.sh"
+. "${FLEET_TOOLS_DIR}/lib/aidir.sh"
 
 GO=0; SEAL=0; ONLY=""
 while [ $# -gt 0 ]; do
@@ -44,11 +45,7 @@ run() { if [ "${GO}" = 1 ]; then echo "    \$ $*"; "$@"; else echo "    [dry-run
 
 # Can the default branch's .ai commit-msg hook take a maintainer merge? (no -> bootstrap, seal)
 admits_merge() {  # admits_merge <dir> <main>
-    local sha
-    sha="$(git -C "$1" ls-tree "upstream/$2" .ai 2>/dev/null | awk '{print $3}')"
-    [ -n "${sha}" ] || return 1
-    git -C "$1/.ai" cat-file -e "${sha}" 2>/dev/null || git -C "$1/.ai" fetch -q origin 2>/dev/null || true
-    git -C "$1/.ai" show "${sha}:.githooks/commit-msg" 2>/dev/null | grep -qi 'merge'
+    ai_admits_merge "$1" "upstream/$2"   # lib/aidir.sh: .ai, .deps/wamp-ai or wamp-ai itself
 }
 
 declare -a SUMMARY=()

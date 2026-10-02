@@ -53,6 +53,7 @@ set -euo pipefail
 FILE_ISSUE="$(command -v "${FILE_ISSUE}" 2>/dev/null || echo "${FILE_ISSUE}")"
 # shellcheck source=lib/rollouts.sh
 . "${FLEET_TOOLS_DIR}/lib/rollouts.sh"
+. "${FLEET_TOOLS_DIR}/lib/aidir.sh"
 
 GO=0
 ONLY=""
@@ -143,12 +144,7 @@ wf() {
 # (autobahn-python: yes. The five bootstrap repos: no - their old hook refuses any commit
 # on master, so the bootstrap lands by fast-forward and the tip must be the signed commit.)
 master_admits_merge() {
-    local repo="$1" sha
-    sha="$(g "${repo}" ls-tree "upstream/$(main_of "${repo}")" .ai | awk '{print $3}')"
-    [ -n "${sha}" ] || return 1
-    git -C "$(rdir "${repo}")/.ai" cat-file -e "${sha}" 2>/dev/null \
-        || git -C "$(rdir "${repo}")/.ai" fetch -q origin 2>/dev/null || true
-    git -C "$(rdir "${repo}")/.ai" show "${sha}:.githooks/commit-msg" 2>/dev/null | grep -qi 'merge'
+    ai_admits_merge "$(rdir "$1")" "upstream/$(main_of "$1")"   # lib/aidir.sh: .ai, .deps/wamp-ai or wamp-ai itself
 }
 
 tip_is_signed() { g "$1" cat-file commit "$2" | grep -q '^gpgsig'; }
@@ -294,8 +290,8 @@ cmd_preflight() {
         fi
         echo "   on:          $(g "${r}" branch --show-current)   dirty: $(g "${r}" status --porcelain | wc -l)"
         echo "   hooksPath:   $(g "${r}" config core.hooksPath || echo UNSET)"
-        [ "$(g "${r}" config core.hooksPath || true)" = ".ai/.githooks" ] \
-            || { warn "hooks not enforced: just --justfile .ai/justfile setup-repo"; blockers=$((blockers+1)); }
+        [ "$(g "${r}" config core.hooksPath || true)" = "$(ai_hooks_path "$(rdir "${r}")")" ] \
+            || { warn "hooks not enforced: core.hooksPath should be $(ai_hooks_path "$(rdir "${r}")") (just fleet-hygiene)"; blockers=$((blockers+1)); }
         echo "   signing:     format=$(g "${r}" config gpg.format || echo -) program=$(g "${r}" config gpg.x509.program || echo -)"
         [ "$(g "${r}" config gpg.format || true)" = "x509" ] \
             || { warn "gitsign not configured for this repo (signed cut/merge impossible)"; blockers=$((blockers+1)); }

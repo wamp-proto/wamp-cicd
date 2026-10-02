@@ -637,12 +637,20 @@ _workflow-hooks-state:
     #!/usr/bin/env bash
     set -uo pipefail
     root="$(git rev-parse --show-toplevel)"
-    hooks="${root}/.ai/.githooks"
+    aidir="$(just --justfile "{{justfile()}}" _workflow-ai-dir)"
 
     # Most repositories that will eventually use this file carry no `.ai`
     # submodule. Absent is not a failure; unenforced-while-present is.
-    if [ ! -d "${hooks}" ]; then
+    if [ -z "${aidir}" ]; then
         echo "na|no .ai/.githooks in this repository"
+        exit 0
+    fi
+    hooks="${root}/${aidir}/.githooks"
+
+    # Pinned in deps.toml but not checked out: the hooks are EXPECTED here and
+    # are not there - the same silence as an unset core.hooksPath (#69).
+    if [ ! -d "${hooks}" ]; then
+        echo "bad|NOT ENFORCED - ${aidir} is pinned in deps.toml but not checked out (just deps)"
         exit 0
     fi
 
@@ -659,6 +667,39 @@ _workflow-hooks-state:
     fi
 
     echo "ok|ENFORCED (${configured})"
+
+# Where this repository has the AI policy tooling (hooks), relative to its root
+# (internal). Prints nothing when it has none.
+#
+#   .ai             the wamp-ai submodule: every ordinary repository
+#   .deps/wamp-ai   a pinned checkout (deps.toml): a repository that must carry
+#                   no submodules because the others pin IT - wamp-cicd (#69)
+#   .               wamp-ai itself: the hooks are its own `.githooks/`
+#
+# See TOOLING-STRUCTURE.md. `.deps/wamp-ai` is answered from deps.toml as well
+# as from the checkout, so that "pinned but not checked out" is reported as
+# hooks missing rather than as "this repository has none".
+_workflow-ai-dir:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    root="$(git rev-parse --show-toplevel)"
+    if [ -d "${root}/.ai/.githooks" ]; then
+        echo ".ai"
+    elif [ -d "${root}/.deps/wamp-ai/.githooks" ] || grep -q '^\[wamp-ai\]' "${root}/deps.toml" 2>/dev/null; then
+        echo ".deps/wamp-ai"
+    elif [ -f "${root}/.githooks/commit-msg" ] && [ -f "${root}/AI_POLICY.md" ] && [ ! -L "${root}/AI_POLICY.md" ]; then
+        echo "."
+    fi
+
+# The command that switches the hooks on in this clone (internal).
+_workflow-hooks-fix:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    case "$(just --justfile "{{justfile()}}" _workflow-ai-dir)" in
+        .deps/wamp-ai) echo "just deps && git config core.hooksPath .deps/wamp-ai/.githooks" ;;
+        .)             echo "git config core.hooksPath .githooks" ;;
+        *)             echo "just --justfile .ai/justfile setup-repo" ;;
+    esac
 
 # Report whether every submodule is at the revision this repository pins.
 #
@@ -901,7 +942,7 @@ commit-on-main reason message:
         echo "  This recipe exists so that hooks never have to be disabled." >&2
         echo "  Running it while they already are defeats the entire point." >&2
         echo "" >&2
-        echo "    just --justfile .ai/justfile setup-repo" >&2
+        echo "    $(just --justfile "{{justfile()}}" _workflow-hooks-fix)" >&2
         exit 1
     fi
 
@@ -1003,7 +1044,7 @@ new-branch issue:
         echo "  commits onto {{WORKFLOW_MAIN}}. The hooks exist and are correct;" >&2
         echo "  they are simply not switched on here." >&2
         echo "" >&2
-        echo "    just --justfile .ai/justfile setup-repo" >&2
+        echo "    $(just --justfile "{{justfile()}}" _workflow-hooks-fix)" >&2
         echo "" >&2
         echo "  If you disabled them deliberately, this is the step that was" >&2
         echo "  going to be forgotten." >&2
@@ -1864,6 +1905,14 @@ land branch='':
         # {{WORKFLOW_MAIN}} PINS (`_workflow-merge-signed` restores the
         # submodules there before it merges). A hook that admits a maintainer
         # merge looks at MERGE_HEAD; one that does not, cannot.
+        #
+        # Where the hook comes from differs by layout (`_workflow-ai-dir`, #69):
+        # the `.ai` submodule at the revision {{WORKFLOW_MAIN}} pins; in wamp-ai
+        # itself, `.githooks/` as {{WORKFLOW_MAIN}} has it; with a pinned
+        # checkout (`.deps/wamp-ai`), the checkout as it stands - no checkout of
+        # {{WORKFLOW_MAIN}} moves that one, `just deps` does.
+        aidir="$(just --justfile "{{justfile()}}" _workflow-ai-dir)"
+        hook=""; hook_from=""; hook_fix=""
         ai_pin="$(git ls-tree "${base_remote}/{{WORKFLOW_MAIN}}" .ai 2>/dev/null | awk '{print $3}')"
         if [ -n "${ai_pin}" ] && [ -e .ai/.git ]; then
             hook="$(git -C .ai show "${ai_pin}:.githooks/commit-msg" 2>/dev/null || true)"
@@ -1872,6 +1921,16 @@ land branch='':
                 git -C .ai fetch --quiet 2>/dev/null || true
                 hook="$(git -C .ai show "${ai_pin}:.githooks/commit-msg" 2>/dev/null || true)"
             fi
+            hook_from=".ai at ${ai_pin:0:7}"
+        elif [ "${aidir}" = "." ]; then
+            hook="$(git show "${base_remote}/{{WORKFLOW_MAIN}}:.githooks/commit-msg" 2>/dev/null || true)"
+            hook_from=".githooks/ on {{WORKFLOW_MAIN}}"
+        elif [ "${aidir}" = ".deps/wamp-ai" ]; then
+            hook="$(cat .deps/wamp-ai/.githooks/commit-msg 2>/dev/null || true)"
+            hook_from=".deps/wamp-ai at $(git -C .deps/wamp-ai rev-parse --short HEAD 2>/dev/null || echo '?')"
+            hook_fix="deps"
+        fi
+        if [ -n "${hook_from}" ]; then
             # Unknown is not "no": if the pinned hook cannot be read, the merge
             # is attempted, and `_workflow-merge-signed` aborts it cleanly and
             # says why if a hook does refuse.
@@ -1879,17 +1938,24 @@ land branch='':
                 echo "" >&2
                 echo "REFUSING: {{WORKFLOW_MAIN}} cannot take a maintainer's merge yet." >&2
                 echo "" >&2
-                echo "  The commit hook {{WORKFLOW_MAIN}} pins (.ai at ${ai_pin:0:7}) refuses every" >&2
+                echo "  The commit hook that runs there (${hook_from}) refuses every" >&2
                 echo "  commit on {{WORKFLOW_MAIN}}: it predates the merge policy and cannot" >&2
                 echo "  tell a maintainer's signed merge from an ordinary commit." >&2
                 echo "  This is the bootstrap, once per repository - not anything" >&2
                 echo "  ${branch} does." >&2
                 echo "" >&2
-                echo "  Land the branch that brings the newer .ai through the forge:" >&2
-                echo "  merge the pull request there, then:" >&2
-                echo "" >&2
-                echo "    git checkout {{WORKFLOW_MAIN}} && git pull --ff-only ${base_remote} {{WORKFLOW_MAIN}}" >&2
-                echo "    git submodule update --init --recursive" >&2
+                if [ "${hook_fix}" = deps ]; then
+                    echo "  The hook is the pinned checkout's. Move the wamp-ai pin in deps.toml" >&2
+                    echo "  to a revision whose hook admits a merge, then:" >&2
+                    echo "" >&2
+                    echo "    just deps" >&2
+                else
+                    echo "  Land the branch that brings the newer hook through the forge:" >&2
+                    echo "  merge the pull request there, then:" >&2
+                    echo "" >&2
+                    echo "    git checkout {{WORKFLOW_MAIN}} && git pull --ff-only ${base_remote} {{WORKFLOW_MAIN}}" >&2
+                    echo "    git submodule update --init --recursive" >&2
+                fi
                 echo "" >&2
                 echo "  Every branch after it lands with 'just land', including ones" >&2
                 echo "  that move .cicd, .ai or any other submodule pin." >&2

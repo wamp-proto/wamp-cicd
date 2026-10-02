@@ -52,7 +52,9 @@ In `${XDG_CONFIG_HOME:-~/.config}/wamp-cicd/fleet/`, and nothing else configures
   repository names must be defined.
 - **`<fleet>.env`** — per-host settings, `KEY=value`, **optional**: every key has a default
   ([`lib/config.sh`](lib/config.sh)). Typically just `EXCHANGE=<remote name>` and
-  `UPLOAD_TO=<host>:<path>`. Mode 600, in a mode 700 directory (refused otherwise: it is executed).
+  `UPLOAD_TO=<host>:<path>`, and `FLEET_DEF_URL=<forge URL of the definition repository>` on a
+  host whose definition clone has no forge remote. Mode 600, in a mode 700 directory (refused
+  otherwise: it is executed).
   The environment overrides it (`EXCHANGE=other just fleet-where`).
 
 By convention the clones live in `~/work/<fleet>/<repo>`, and a rollout's state and logs in
@@ -144,6 +146,19 @@ A rollout lives in the fleet's definition repository, and every member records w
 - **Lag check.** In a member's CI (checkout with submodules):
   `bash .cicd/fleet/lag-check.sh` fails if a rollout of the member's cohorts in its pinned
   `.fleet/` has no marker.
+- **Tooling sources** ([`../TOOLING-STRUCTURE.md`](../TOOLING-STRUCTURE.md)). A member that the
+  definition repository itself pins as a submodule (wamp-cicd as `.cicd`, wamp-ai as `.ai`) must
+  carry no submodules. The runner recognises it from the definition's `.gitmodules` - nothing is
+  configured - and, instead of `.fleet/`, writes the definition's pin into the member's
+  `deps.toml` and checks it out into the gitignored `.deps/<definition repository>`
+  ([`../scripts/deps.sh`](../scripts/deps.sh)), again from the local clone. `apply.sh` and
+  `check.sh` get `FLEET_TOOLING_SOURCE` (`.cicd` or `.ai`; empty for an ordinary member) and
+  write their pins with `deps.sh set` instead of moving submodules. Markers, arguments and exit
+  codes are the same. Its lag check: `lag-check.sh --fleet-dir .deps/<definition repository>`.
+  The fleet scripts find the hooks of such a member through [`lib/aidir.sh`](lib/aidir.sh).
+- **The definition's forge URL** (for `.gitmodules` / `deps.toml`): what the member already
+  records, else `--fleet-url`, else `FLEET_DEF_URL` (environment or `<fleet>.env`), else a forge
+  remote of the definition clone.
 
 ## A rollout, step by step
 
@@ -241,7 +256,9 @@ use), [`test-fleet-recipes.sh`](../tests/test-fleet-recipes.sh) (the recipes and
 [`test-file-issue.sh`](../tests/test-file-issue.sh),
 [`test-fleet-runner.sh`](../tests/test-fleet-runner.sh) (`apply-rollout.sh`: every exit code,
 adoption, `.fleet/` with the network disabled, the real commit hook; next; the lag check; the
-rollout contract), and [`sandbox-test.sh`](sandbox-test.sh) twice: a whole wave of a migration
+rollout contract; tooling sources; `FLEET_DEF_URL`), [`test-deps.sh`](../tests/test-deps.sh)
+(`deps.sh`), [`test-ai-dir.sh`](../tests/test-ai-dir.sh) (the hooks in all three layouts, and
+`just land` in a tooling source), and [`sandbox-test.sh`](sandbox-test.sh) twice: a whole wave of a migration
 (init → cut → apply-rollout → land in both landing modes → finish) against local bare
 repositories, once in the WAMP shape and once with neutral names (`SANDBOX_FLAVOUR=neutral`),
 asserting the result.
