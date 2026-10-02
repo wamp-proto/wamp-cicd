@@ -122,7 +122,7 @@ the same commit as the marker in `.waves/` that records the rollout - exactly wh
 
 `scripts/deps.sh` lives in wamp-cicd. A tooling source other than wamp-cicd carries a managed,
 byte-identical copy: a repository cannot fetch the script that fetches its dependencies from a
-dependency.
+dependency. This document is kept identical the same way.
 
 ## Where things are, by layout
 
@@ -132,7 +132,7 @@ dependency.
 | branch workflow (`just where`, `new-branch`, `publish`, `land`) | `import '.cicd/workflow.just'` | `import 'workflow.just'` | `import? '.deps/wamp-cicd/workflow.just'` |
 | community file templates | `.cicd/templates/` | `templates/` | `.deps/wamp-cicd/templates/` |
 | fleet definition | `.fleet/` | `.deps/<definition repository>/` | `.deps/<definition repository>/` |
-| lag check in CI | `lag-check.sh` | `lag-check.sh --fleet-dir .deps/<definition repository>` | the same |
+| lag check in CI | `lag-check.sh` | `lag-check.sh` (it finds the definition under `.deps/`) | the same |
 
 The tools find out which layout they are in by looking: `.ai/` present, else wamp-ai pinned in
 `deps.toml`, else the repository's own `.githooks/`. Nothing has to be configured.

@@ -37,6 +37,8 @@
 # apply.sh / check.sh run with the member's root as working directory and this environment:
 #   FLEET_NAME FLEET_COHORT FLEET_ROLLOUT FLEET_REPO FLEET_SLUG FLEET_DEFAULT_BRANCH
 #   FLEET_DEF_DIR (the definition clone)   FLEET_TOOLS_DIR (wamp-cicd fleet/)
+#   FLEET_DEF_URL         the definition repository's forge URL, as resolved here
+#   FLEET_DEF_DEP         in a tooling source: the definition's name under .deps/ and in deps.toml
 #   FLEET_TOOLING_SOURCE  empty for an ordinary member; for a tooling source the path under which
 #                         the others pin it (.cicd or .ai) - then: no submodules, deps.toml instead
 #                         (${FLEET_TOOLS_DIR}/../scripts/deps.sh set|sync)
@@ -162,7 +164,8 @@ fi
 
 export FLEET_COHORT="${COHORT}" FLEET_ROLLOUT="${RNAME}" FLEET_REPO="${REPO}" FLEET_SLUG="${SLUG}"
 export FLEET_DEFAULT_BRANCH="${DEFAULT_BRANCH}" FLEET_DEF_DIR="${DEF}" FLEET_TOOLS_DIR="${HERE}"
-export FLEET_TOOLING_SOURCE="${TOOLING_SOURCE}"
+export FLEET_TOOLING_SOURCE="${TOOLING_SOURCE}" FLEET_DEF_URL="${url}"
+if [ -n "${TOOLING_SOURCE}" ]; then export FLEET_DEF_DEP="${DEF_DEP}"; else unset FLEET_DEF_DEP; fi
 # The .cicd pin as staged (the index): before apply.sh that is HEAD's, after it and `git add -A`
 # it is the pin the commit will set. Empty when the repository has no .cicd.
 # A tooling source has no .cicd: its wamp-cicd pin, if it has one, is in deps.toml.

@@ -10,18 +10,20 @@
 # repository must not silently fall behind the definition it pins - that drift is what the
 # markers exist to prevent.
 #
-# The pinned definition is .fleet/ - or --fleet-dir, for a repository that carries no submodules
-# and has the definition as a pinned checkout (.deps/<definition repository>, deps.toml).
+# The pinned definition is found by looking (#71): .fleet/ where the repository has it, else -
+# in a repository that carries no submodules - the ONE directory .deps/*/ that holds a fleet.toml
+# (the definition as a pinned checkout, deps.toml). So the CI step is the same line in every
+# layout. None, or more than one: exit 2. --fleet-dir names it explicitly.
 # The slug comes from --slug, else $GITHUB_REPOSITORY, else the upstream/origin forge URL.
 # Exit 0 up to date; 1 behind (the missing rollouts are listed); 2 cannot tell.
 
 set -uo pipefail
-SLUG=""; FLEET_DIR=".fleet"
+SLUG=""; FLEET_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --slug) SLUG="$2"; shift 2 ;;
         --fleet-dir) FLEET_DIR="${2%/}"; shift 2 ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -33,6 +35,20 @@ if [ -z "${SLUG}" ]; then
     done
 fi
 [ -n "${SLUG}" ] || { echo "ERROR: cannot tell this repository's slug: pass --slug <owner>/<repo>" >&2; exit 2; }
+if [ -z "${FLEET_DIR}" ]; then
+    if [ -e .fleet ] || git config -f .gitmodules --get submodule..fleet.url >/dev/null 2>&1; then
+        FLEET_DIR=".fleet"
+    else
+        found=()
+        for f in .deps/*/fleet.toml; do [ -f "${f}" ] && found+=("$(dirname "${f}")"); done
+        case "${#found[@]}" in
+            1) FLEET_DIR="${found[0]}" ;;
+            0) echo "ERROR: no pinned fleet definition here: no .fleet/, and no .deps/*/fleet.toml" >&2
+               echo "       (checkout with submodules; or, in a repository without them: deps.sh sync)" >&2; exit 2 ;;
+            *) echo "ERROR: more than one fleet definition under .deps/ (${found[*]}): pass --fleet-dir" >&2; exit 2 ;;
+        esac
+    fi
+fi
 if [ ! -f "${FLEET_DIR}/fleet.toml" ]; then
     if [ "${FLEET_DIR}" = .fleet ]; then echo "ERROR: no .fleet/fleet.toml here - is the .fleet submodule initialised (checkout with submodules)?" >&2
     else echo "ERROR: no ${FLEET_DIR}/fleet.toml here - is .deps/ populated (deps.sh sync)?" >&2; fi

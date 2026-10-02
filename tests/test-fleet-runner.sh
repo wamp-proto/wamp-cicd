@@ -212,7 +212,7 @@ lag "$B" --slug acme/bravo; rc=$?
 [ "$rc" = 1 ] && grep -q "core/0003-third    (no .waves/core/0003-third.toml)" "${WORK}/log" && ok "its pin moved on without the rollout: BEHIND, exit 1, names it" || bad "lag behind" "rc=$rc"
 ( cd "$B" && GITHUB_REPOSITORY=acme/bravo bash "${LAG}" ) > "${WORK}/log" 2>&1; [ $? = 1 ] && ok "the slug comes from GITHUB_REPOSITORY in CI" || bad "GITHUB_REPOSITORY"
 lag "$A" --slug acme/nobody; [ $? = 2 ] && grep -q "not in the inventory" "${WORK}/log" && ok "not in the pinned inventory: exit 2" || bad "lag: unknown slug"
-lag "${WORK}/stranger" --slug acme/alpha; [ $? = 2 ] && grep -q "no .fleet/fleet.toml" "${WORK}/log" && ok "no .fleet/: exit 2, says to check out with submodules" || bad "lag: no .fleet"
+lag "${WORK}/stranger" --slug acme/alpha; [ $? = 2 ] && grep -q "no pinned fleet definition here" "${WORK}/log" && ok "no .fleet/ and nothing under .deps/: exit 2, says how to get one" || bad "lag: no .fleet"
 
 echo "== a rollout directory's contract (fleet/lib/check-rollout.py)"
 CR="${HERE}/../fleet/lib/check-rollout.py"
@@ -291,6 +291,7 @@ printf 'name = "0001-probe"\ncohort = "core"\ndescription = "test rollout"\n' > 
 # apply.sh: records what it was told; a tooling source other than the tools themselves pins the
 # tools in deps.toml, as a real rollout would.
 { echo '#!/usr/bin/env bash'; echo 'set -e'; echo 'echo "[${FLEET_TOOLING_SOURCE}]" > TS.txt'
+  echo 'echo "${FLEET_DEF_URL} [${FLEET_DEF_DEP:-}]" > DEF.txt'
   echo 'if [ "${FLEET_TOOLING_SOURCE}" = .ai ]; then'
   echo "    bash \"\${FLEET_TOOLS_DIR}/../scripts/deps.sh\" set tools https://github.com/acme/tools.git ${T2}"
   echo 'fi'; } > "$TS/rollouts/core/0001-probe/apply.sh"
@@ -307,7 +308,11 @@ grep -qx '\[.cicd\]' "$TL/TS.txt" && ok "apply.sh sees FLEET_TOOLING_SOURCE=.cic
 [ "$(cicd_of "$TL/.waves/core/0001-probe.toml")" = "<absent>" ] && grep -q "^fleet   = \"https://github.com/acme/ts-fleet@${TS1}\"" "$TL/.waves/core/0001-probe.toml" \
     && grep -q '^script  = "sha256:' "$TL/.waves/core/0001-probe.toml" && ok "marker as for any member; no cicd key (it IS the tools)" || bad "tooling marker" "$(cat "$TL/.waves/core/0001-probe.toml" 2>&1)"
 lag "$TL" --slug acme/tools --fleet-dir .deps/ts-fleet; [ $? = 0 ] && grep -q "OK: acme/tools has all 1 rollouts" "${WORK}/log" && ok "lag check --fleet-dir .deps/ts-fleet: up to date" || bad "lag --fleet-dir"
-lag "$TL" --slug acme/tools; [ $? = 2 ] && ok "lag check without --fleet-dir there: cannot tell (no .fleet/)" || bad "lag default dir"
+lag "$TL" --slug acme/tools; [ $? = 0 ] && grep -q "OK: acme/tools has all 1 rollouts" "${WORK}/log" && ok "lag check WITHOUT --fleet-dir finds the one definition under .deps/ (#71)" || bad "lag finds .deps"
+grep -qx "$TSURL \[ts-fleet\]" "$TL/DEF.txt" && ok "apply.sh sees FLEET_DEF_URL and FLEET_DEF_DEP (#71)" || bad "FLEET_DEF_URL/DEP" "$(cat "$TL/DEF.txt" 2>&1)"
+mkdir -p "$TL/.deps/second"; cp "$TL/.deps/ts-fleet/fleet.toml" "$TL/.deps/second/fleet.toml"
+lag "$TL" --slug acme/tools; [ $? = 2 ] && grep -q "more than one fleet definition" "${WORK}/log" && ok "two definitions under .deps/: exit 2, pass --fleet-dir" || bad "lag two defs"
+rm -rf "$TL/.deps/second"
 lag "$TL" --slug acme/tools --fleet-dir .deps/nope; [ $? = 2 ] && grep -q "is .deps/ populated" "${WORK}/log" && ok "lag check on an unpopulated --fleet-dir says so" || bad "lag unpopulated"
 member policy; PO="${WORK}/policy"
 run "$PO" "$TS" core/0001-probe --issue 12 --fleet-url "$TSURL"; rc=$?
@@ -317,6 +322,8 @@ member plain; PL="${WORK}/plain"
 run "$PL" "$TS" core/0001-probe --issue 12 --fleet-url "$TSURL"; rc=$?
 [ "$rc" = 0 ] && grep -qx '\[\]' "$PL/TS.txt" && [ "$(git -C "$PL" ls-tree HEAD .fleet | awk '{print $3}')" = "$TS1" ] && [ ! -e "$PL/deps.toml" ] \
     && ok "an ordinary member of the same fleet: .fleet/ submodule as before, no deps.toml, FLEET_TOOLING_SOURCE empty" || bad "plain member" "rc=$rc"
+grep -qx "$TSURL \[\]" "$PL/DEF.txt" && ok "...and FLEET_DEF_URL set, FLEET_DEF_DEP not (#71)" || bad "plain FLEET_DEF_URL" "$(cat "$PL/DEF.txt" 2>&1)"
+lag "$PL" --slug acme/plain; [ $? = 0 ] && ok "...and its lag check uses .fleet/" || bad "plain lag"
 mkdir -p "$TS/rollouts/core/0002-more"; printf 'name = "0002-more"\ncohort = "core"\ndescription = "test rollout"\n' > "$TS/rollouts/core/0002-more/rollout.toml"
 printf '#!/usr/bin/env bash\necho more > MORE.txt\n' > "$TS/rollouts/core/0002-more/apply.sh"; chmod +x "$TS/rollouts/core/0002-more/apply.sh"; echo i > "$TS/rollouts/core/0002-more/issue.md"
 q git -C "$TS" add -A; q git -C "$TS" commit -m "definition: a second rollout"; TS2="$(git -C "$TS" rev-parse HEAD)"
