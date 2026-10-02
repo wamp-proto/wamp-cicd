@@ -95,6 +95,9 @@ out="$(chk typo)"; rc=$?
 envf typo "FLEET_INVENTORY=/somewhere/fleet.toml"
 out="$(chk typo)"; rc=$?
 [ "$rc" -ne 0 ] && grep -q "unknown key(s) in typo.env: FLEET_INVENTORY" <<<"$out" && ok "FLEET_INVENTORY is no longer a key" || fail "FLEET_INVENTORY: $out"
+envf typo "FLEET_DEF_URL=https://github.com/acme/acme-fleet.git"
+out="$(chk typo)"; rc=$?
+[ "$rc" -eq 0 ] && grep -q "FLEET_DEF_URL *https://github.com/acme/acme-fleet.git" <<<"$out" && ok "FLEET_DEF_URL is a known key (#69)" || fail "FLEET_DEF_URL: $out"
 sed 's|"acme/alpha"|"acme/other"|' "${GOOD}" > "${WORK}/bad.toml"; inv badinv "${WORK}/bad.toml"
 out="$(chk badinv)"; rc=$?
 [ "$rc" -ne 0 ] && grep -q "slug ends in the name" <<<"$out" && ok "an invalid inventory fails, naming the check" || fail "bad inventory: $out"

@@ -15,7 +15,7 @@ export SANDBOX_DIR="${SANDBOX_DIR:-/tmp/fleet-sandbox}"
 SB="${SANDBOX_DIR}"   # throwaway test data; deliberately OUTSIDE the script directory
 # The real wamp-ai justfile (its generate-audit-file recipe is what `cut` runs). In CI: a checkout
 # of wamp-proto/wamp-ai; locally: the sibling clone.
-AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../../wamp-ai/justfile}"
+AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../.deps/wamp-ai/justfile}"
 [ -f "${AI_JUSTFILE}" ] || { echo "FATAL: no wamp-ai justfile at ${AI_JUSTFILE} (set AI_JUSTFILE)" >&2; exit 2; }
 
 # Names. The default is the WAMP shape the tooling was proven on; SANDBOX_FLAVOUR=neutral uses

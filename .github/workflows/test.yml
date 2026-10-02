@@ -29,13 +29,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # The rollout sandbox runs the REAL wamp-ai justfile (its generate-audit-file recipe is
-      # what `cut` calls), so wamp-ai is checked out next to this repository.
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: wamp-proto/wamp-ai
-          path: .deps/wamp-ai
-          persist-credentials: false
+      # The tests run the REAL wamp-ai justfile and commit-msg hook. wamp-ai comes the way every
+      # dependency of this repository does: at the commit deps.toml pins, into .deps/ (#69).
+      - name: Dependencies at their pinned commits (deps.toml)
+        run: bash scripts/deps.sh sync
 
       - name: Install just 1.42.4
         env:

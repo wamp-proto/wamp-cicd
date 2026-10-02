@@ -19,7 +19,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKFLOW_JUST="${HERE}/../workflow.just"
-AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../../wamp-ai/justfile}"
+AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../.deps/wamp-ai/justfile}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 

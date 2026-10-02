@@ -22,7 +22,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN="${HERE}/../fleet/apply-rollout.sh"
-AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../../wamp-ai/justfile}"
+AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../.deps/wamp-ai/justfile}"
 HOOKS="$(dirname "${AI_JUSTFILE}")/.githooks"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -36,6 +36,8 @@ git config --global init.defaultBranch main
 # (deliberately unreachable) canonical URL fails the test.
 export GIT_ALLOW_PROTOCOL=file
 unset FLEET_NAME
+# Hermetic: the runner may look for FLEET_DEF_URL in a fleet's <fleet>.env - never in the real one.
+export FLEET_CONFIG_DIR="${WORK}/no-config"
 PASS=0; FAIL=0
 q() { "$@" >/dev/null 2>&1; }
 ok()  { echo "  ok   [$1]"; PASS=$((PASS + 1)); }
@@ -275,6 +277,67 @@ run "$D2" "$LD" core/0002-bump --issue 10 --repo delta --fleet-url "$URL"; rc=$?
 member delta3
 strict "${WORK}/delta3" "$PIN" core/0001-tools --issue 11 --repo delta --fleet-url "$URL"; rc=$?
 [ "$rc" = 2 ] && grep -q "is not landed" "${WORK}/log" && ok "a definition clone without any remote default branch: refused (cannot tell)" || bad "no remote" "rc=$rc"
+
+echo "== a tooling source: no submodules - the definition's pin in deps.toml, its checkout in .deps/ (#69)"
+# The definition pins acme/tools as .cicd and acme/policy as .ai: those two members are the
+# tooling sources. Only .gitmodules is read for that, so the file alone is enough here.
+DEPS="${HERE}/../scripts/deps.sh"
+TSURL="https://github.com/acme/ts-fleet.git"
+TS="${WORK}/ts-fleet"; q git init "$TS"; mkdir -p "$TS/rollouts/core/0001-probe"
+printf '[submodule ".cicd"]\n\tpath = .cicd\n\turl = https://github.com/acme/tools.git\n[submodule ".ai"]\n\tpath = .ai\n\turl = git@github.com:ACME/Policy.git\n' > "$TS/.gitmodules"
+{ echo 'schema = 2'; printf '[[cohort]]\nname = "core"\ndescription = "c"\n'
+  for n in tools policy plain; do printf '[[repo]]\nname = "%s"\nslug = "acme/%s"\ndefault_branch = "main"\ncohorts = ["core"]\n' "$n" "$n"; done; } > "$TS/fleet.toml"
+printf 'name = "0001-probe"\ncohort = "core"\ndescription = "test rollout"\n' > "$TS/rollouts/core/0001-probe/rollout.toml"
+# apply.sh: records what it was told; a tooling source other than the tools themselves pins the
+# tools in deps.toml, as a real rollout would.
+{ echo '#!/usr/bin/env bash'; echo 'set -e'; echo 'echo "[${FLEET_TOOLING_SOURCE}]" > TS.txt'
+  echo 'if [ "${FLEET_TOOLING_SOURCE}" = .ai ]; then'
+  echo "    bash \"\${FLEET_TOOLS_DIR}/../scripts/deps.sh\" set tools https://github.com/acme/tools.git ${T2}"
+  echo 'fi'; } > "$TS/rollouts/core/0001-probe/apply.sh"
+chmod +x "$TS/rollouts/core/0001-probe/apply.sh"; echo "issue text" > "$TS/rollouts/core/0001-probe/issue.md"
+q git -C "$TS" add -A; q git -C "$TS" commit -m "definition: pins its tools"; TS1="$(git -C "$TS" rev-parse HEAD)"
+member tsrc; TL="${WORK}/tsrc"
+run "$TL" "$TS" core/0001-probe --issue 12 --repo tools --fleet-url "$TSURL"; rc=$?
+[ "$rc" = 0 ] && [ "$(git -C "$TL" rev-list --count main..fix_5)" = 1 ] && ok "exit 0, one commit" || bad "tooling source applies" "rc=$rc"
+[ ! -e "$TL/.fleet" ] && [ ! -e "$TL/.gitmodules" ] && [ -z "$(git -C "$TL" ls-tree -r HEAD | awk '$1=="160000"')" ] && ok "no .fleet/, no .gitmodules, no submodule at all" || bad "no submodules"
+[ "$(bash "$DEPS" get --root "$TL" ts-fleet)" = "$TS1 $TSURL" ] && ok "deps.toml pins the definition: its forge URL at the definition's commit" || bad "deps.toml" "$(cat "$TL/deps.toml" 2>&1)"
+[ -f "$TL/.deps/ts-fleet/fleet.toml" ] && [ "$(git -C "$TL/.deps/ts-fleet" rev-parse HEAD)" = "$TS1" ] && ok ".deps/ts-fleet is populated at that commit (local objects: no other transport is allowed here)" || bad ".deps populated"
+grep -qx ".deps/" "$TL/.gitignore" && [ -z "$(git -C "$TL" ls-files .deps)" ] && [ -z "$(git -C "$TL" status --porcelain)" ] && ok ".deps/ is ignored, not committed; tree clean" || bad ".deps ignored" "$(git -C "$TL" status --porcelain)"
+grep -qx '\[.cicd\]' "$TL/TS.txt" && ok "apply.sh sees FLEET_TOOLING_SOURCE=.cicd (the path the others pin it under)" || bad "FLEET_TOOLING_SOURCE" "$(cat "$TL/TS.txt" 2>&1)"
+[ "$(cicd_of "$TL/.waves/core/0001-probe.toml")" = "<absent>" ] && grep -q "^fleet   = \"https://github.com/acme/ts-fleet@${TS1}\"" "$TL/.waves/core/0001-probe.toml" \
+    && grep -q '^script  = "sha256:' "$TL/.waves/core/0001-probe.toml" && ok "marker as for any member; no cicd key (it IS the tools)" || bad "tooling marker" "$(cat "$TL/.waves/core/0001-probe.toml" 2>&1)"
+lag "$TL" --slug acme/tools --fleet-dir .deps/ts-fleet; [ $? = 0 ] && grep -q "OK: acme/tools has all 1 rollouts" "${WORK}/log" && ok "lag check --fleet-dir .deps/ts-fleet: up to date" || bad "lag --fleet-dir"
+lag "$TL" --slug acme/tools; [ $? = 2 ] && ok "lag check without --fleet-dir there: cannot tell (no .fleet/)" || bad "lag default dir"
+lag "$TL" --slug acme/tools --fleet-dir .deps/nope; [ $? = 2 ] && grep -q "is .deps/ populated" "${WORK}/log" && ok "lag check on an unpopulated --fleet-dir says so" || bad "lag unpopulated"
+member policy; PO="${WORK}/policy"
+run "$PO" "$TS" core/0001-probe --issue 12 --fleet-url "$TSURL"; rc=$?
+[ "$rc" = 0 ] && grep -qx '\[.ai\]' "$PO/TS.txt" && ok "the other tooling source (URL in another spelling and case): FLEET_TOOLING_SOURCE=.ai" || bad "policy" "rc=$rc"
+[ "$(cicd_of "$PO/.waves/core/0001-probe.toml")" = "$T2" ] && ok "its marker's cicd is the tools pin from deps.toml" || bad "policy marker cicd" "$(cicd_of "$PO/.waves/core/0001-probe.toml")"
+member plain; PL="${WORK}/plain"
+run "$PL" "$TS" core/0001-probe --issue 12 --fleet-url "$TSURL"; rc=$?
+[ "$rc" = 0 ] && grep -qx '\[\]' "$PL/TS.txt" && [ "$(git -C "$PL" ls-tree HEAD .fleet | awk '{print $3}')" = "$TS1" ] && [ ! -e "$PL/deps.toml" ] \
+    && ok "an ordinary member of the same fleet: .fleet/ submodule as before, no deps.toml, FLEET_TOOLING_SOURCE empty" || bad "plain member" "rc=$rc"
+mkdir -p "$TS/rollouts/core/0002-more"; printf 'name = "0002-more"\ncohort = "core"\ndescription = "test rollout"\n' > "$TS/rollouts/core/0002-more/rollout.toml"
+printf '#!/usr/bin/env bash\necho more > MORE.txt\n' > "$TS/rollouts/core/0002-more/apply.sh"; chmod +x "$TS/rollouts/core/0002-more/apply.sh"; echo i > "$TS/rollouts/core/0002-more/issue.md"
+q git -C "$TS" add -A; q git -C "$TS" commit -m "definition: a second rollout"; TS2="$(git -C "$TS" rev-parse HEAD)"
+run "$TL" "$TS" core/0002-more --issue 13 --repo tools; rc=$?
+[ "$rc" = 0 ] && [ "$(bash "$DEPS" get --root "$TL" ts-fleet)" = "$TS2 $TSURL" ] && [ "$(git -C "$TL/.deps/ts-fleet" rev-parse HEAD)" = "$TS2" ] \
+    && ok "the next rollout moves the pin and the checkout; the URL comes from deps.toml (no --fleet-url)" || bad "tooling second rollout" "rc=$rc"
+member tools2; q git -C "${WORK}/tools2" -c protocol.file.allow=always submodule add "$TS" .fleet; q git -C "${WORK}/tools2" commit -am "a .fleet submodule, by mistake"
+t20="$(git -C "${WORK}/tools2" rev-parse HEAD)"
+run "${WORK}/tools2" "$TS" core/0001-probe --issue 12 --repo tools --fleet-url "$TSURL"; rc=$?
+[ "$rc" = 12 ] && grep -q "carries a .fleet submodule" "${WORK}/log" && [ "$(git -C "${WORK}/tools2" rev-parse HEAD)" = "$t20" ] && ok "a tooling source that carries .fleet/: refused, nothing committed" || bad "tooling with .fleet" "rc=$rc"
+
+echo "== FLEET_DEF_URL: the definition's forge URL where its clone has no forge remote (#69)"
+member plain2
+run "${WORK}/plain2" "$TS" core/0001-probe --issue 14 --repo plain; rc=$?
+[ "$rc" = 2 ] && grep -q "FLEET_DEF_URL" "${WORK}/log" && ok "no --fleet-url, no forge remote, no FLEET_DEF_URL: exit 2, and says how" || bad "no url" "rc=$rc"
+FLEET_DEF_URL="$TSURL" run "${WORK}/plain2" "$TS" core/0001-probe --issue 14 --repo plain; rc=$?
+[ "$rc" = 0 ] && [ "$(git -C "${WORK}/plain2" config -f .gitmodules --get submodule..fleet.url)" = "$TSURL" ] && ok "FLEET_DEF_URL in the environment is what .gitmodules records" || bad "FLEET_DEF_URL env" "rc=$rc"
+CFG="${WORK}/cfg"; mkdir -p "$CFG"; chmod 700 "$CFG"; ln -s "$TS/fleet.toml" "$CFG/ts.toml"; echo "FLEET_DEF_URL=$TSURL" > "$CFG/ts.env"; chmod 600 "$CFG/ts.env"
+member plain3
+FLEET_CONFIG_DIR="$CFG" run "${WORK}/plain3" "$TS" core/0001-probe --issue 14 --repo plain; rc=$?
+[ "$rc" = 0 ] && [ "$(git -C "${WORK}/plain3" config -f .gitmodules --get submodule..fleet.url)" = "$TSURL" ] && ok "...and so is FLEET_DEF_URL from the fleet's <fleet>.env" || bad "FLEET_DEF_URL config" "rc=$rc"
 
 echo "== usage"
 run "$A" "$DEF" core/0001-first; [ $? = 2 ] && ok "--issue is required" || bad "--issue required"

@@ -17,6 +17,13 @@
 #   4. writes the marker .waves/<cohort>/<NNNN>-<name>.toml;
 #   5. commits: "Apply rollout <cohort>/<NNNN>-<name> (#<n>)".
 #
+# A TOOLING SOURCE - a member the definition repository itself pins as a submodule (wamp-cicd as
+# .cicd, wamp-ai as .ai) - must carry no submodules: every other repository pins it, and .fleet/
+# inside it would nest one level deeper with every bump (TOOLING-STRUCTURE.md). For such a member
+# step 3 is different: the definition's pin goes into deps.toml and its checkout into the
+# gitignored .deps/<definition repository> (scripts/deps.sh), again from local objects only.
+# Everything else - adoption, apply.sh, the markers, the one commit, the exit codes - is the same.
+#
 # The definition clone's HEAD must be LANDED: contained in the default branch of one of its remotes
 # (refs/remotes/<remote>/HEAD). .fleet/ is pinned to that commit, and a commit of an unlanded
 # branch is one the forge does not have on its default branch - or at all: the member's CI could
@@ -30,6 +37,9 @@
 # apply.sh / check.sh run with the member's root as working directory and this environment:
 #   FLEET_NAME FLEET_COHORT FLEET_ROLLOUT FLEET_REPO FLEET_SLUG FLEET_DEFAULT_BRANCH
 #   FLEET_DEF_DIR (the definition clone)   FLEET_TOOLS_DIR (wamp-cicd fleet/)
+#   FLEET_TOOLING_SOURCE  empty for an ordinary member; for a tooling source the path under which
+#                         the others pin it (.cicd or .ai) - then: no submodules, deps.toml instead
+#                         (${FLEET_TOOLS_DIR}/../scripts/deps.sh set|sync)
 # apply.sh changes files (and may `git add`); it does not commit or push; it is re-runnable.
 #
 # Exit codes, so an orchestration loop can re-run a half-finished wave:
@@ -113,24 +123,56 @@ if [ -n "${FOOTER}" ] && grep -q -i -E "((authored by|co-authored by|generated b
     die "--footer would be rejected by the commit-msg hook (authorship attribution): ${FOOTER}"
 fi
 
-# The canonical URL .gitmodules records for .fleet/: what the member already records, else
-# --fleet-url, else the definition clone's forge remote. (An exchange path is not canonical.)
-url="$(git -C "${MEMBER}" config -f .gitmodules --get submodule..fleet.url 2>/dev/null || true)"
+# Is this member a tooling source? Yes when the definition repository's own .gitmodules pins it:
+# compared by <owner>/<repo>, the last two components of the URL. Nothing is hard-coded here and
+# the inventory has no key for it.
+owner_repo() { local u="${1%.git}"; u="${u%/}"; u="${u//://}"; awk -F/ 'NF>=2 {print tolower($(NF-1) "/" $NF)}' <<<"${u}"; }
+TOOLING_SOURCE=""; CICD_DEP=""
+if [ -f "${DEF}/.gitmodules" ]; then
+    while read -r key u; do
+        [ -n "${key}" ] || continue
+        name="${key#submodule.}"; name="${name%.url}"
+        path="$(git -C "${DEF}" config -f .gitmodules --get "submodule.${name}.path" 2>/dev/null || true)"
+        [ "$(owner_repo "${u}")" = "${SLUG,,}" ] && TOOLING_SOURCE="${path}"
+        [ "${path}" = .cicd ] && CICD_DEP="$(basename "${u%.git}")"
+    done < <(git -C "${DEF}" config -f .gitmodules --get-regexp '^submodule\..*\.url$' 2>/dev/null || true)
+fi
+DEPS_SH="${HERE}/../scripts/deps.sh"
+export FLEET_NAME="${FLEET_NAME:-$(basename "${DEF}" | sed 's/-fleet$//')}"
+
+# The canonical URL of the definition repository, recorded in .gitmodules (or deps.toml): what the
+# member already records, else --fleet-url, else FLEET_DEF_URL (the environment, or the fleet's
+# <fleet>.env), else the definition clone's forge remote. (An exchange path is not canonical.)
+DEF_DEP="$(basename "${DEF}")"
+if [ -n "${TOOLING_SOURCE}" ]; then url="$(bash "${DEPS_SH}" get --root "${MEMBER}" "${DEF_DEP}" 2>/dev/null | cut -d' ' -f2 || true)"
+else url="$(git -C "${MEMBER}" config -f .gitmodules --get submodule..fleet.url 2>/dev/null || true)"; fi
 [ -n "${url}" ] || url="${FLEET_URL}"
+if [ -z "${url}" ] && [ -z "${FLEET_DEF_URL:-}" ]; then
+    FLEET_DEF_URL="$(bash -c '. "$1" >/dev/null 2>&1 && printf %s "${FLEET_DEF_URL:-}"' _ "${HERE}/lib/config.sh" 2>/dev/null || true)"
+fi
+[ -n "${url}" ] || url="${FLEET_DEF_URL:-}"
 if [ -z "${url}" ]; then
     for r in upstream origin; do
         u="$(git -C "${DEF}" config --get "remote.${r}.url" 2>/dev/null || true)"
         if [[ "${u}" =~ github\.com[:/](.+)$ ]]; then url="https://github.com/${BASH_REMATCH[1]%.git}.git"; break; fi
     done
 fi
-[ -n "${url}" ] || die "cannot tell the definition repository's forge URL for .gitmodules: pass --fleet-url <url>"
+[ -n "${url}" ] || die "cannot tell the definition repository's forge URL: pass --fleet-url <url> (or set FLEET_DEF_URL)"
+[ -z "${TOOLING_SOURCE}" ] || DEF_DEP="$(basename "${url%.git}")"
 
-export FLEET_NAME="${FLEET_NAME:-$(basename "${DEF}" | sed 's/-fleet$//')}"
 export FLEET_COHORT="${COHORT}" FLEET_ROLLOUT="${RNAME}" FLEET_REPO="${REPO}" FLEET_SLUG="${SLUG}"
 export FLEET_DEFAULT_BRANCH="${DEFAULT_BRANCH}" FLEET_DEF_DIR="${DEF}" FLEET_TOOLS_DIR="${HERE}"
+export FLEET_TOOLING_SOURCE="${TOOLING_SOURCE}"
 # The .cicd pin as staged (the index): before apply.sh that is HEAD's, after it and `git add -A`
 # it is the pin the commit will set. Empty when the repository has no .cicd.
-cicd_pin() { git -C "${MEMBER}" ls-files -s -- .cicd 2>/dev/null | awk '$1=="160000"{print $2}'; }
+# A tooling source has no .cicd: its wamp-cicd pin, if it has one, is in deps.toml.
+cicd_pin() {
+    if [ -n "${TOOLING_SOURCE}" ]; then
+        [ -z "${CICD_DEP}" ] || bash "${DEPS_SH}" get --root "${MEMBER}" "${CICD_DEP}" 2>/dev/null | cut -d' ' -f1 || true
+    else
+        git -C "${MEMBER}" ls-files -s -- .cicd 2>/dev/null | awk '$1=="160000"{print $2}'
+    fi
+}
 CICD_BEFORE="$(cicd_pin)"
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -164,7 +206,19 @@ else
     echo "ERROR: ${REPO}: ${ROLLOUT} has no apply.sh and cannot be adopted (no passing check.sh)" >&2; exit 13
 fi
 
-# 3. .fleet/ at the definition's commit, from LOCAL objects only (no network).
+# 3. The definition, pinned at its commit, from LOCAL objects only (no network): the .fleet/
+# submodule - or, in a tooling source, the deps.toml entry and .deps/<definition repository>.
+if [ -n "${TOOLING_SOURCE}" ]; then
+(
+    cd "${MEMBER}" || exit 1
+    [ ! -e .fleet ] && ! git config -f .gitmodules --get submodule..fleet.url >/dev/null 2>&1 \
+        || { echo "ERROR: ${REPO} is a tooling source but carries a .fleet submodule - remove it first" >&2; exit 1; }
+    git check-ignore -q .deps/x 2>/dev/null || { echo ".deps/" >> .gitignore; }
+    bash "${DEPS_SH}" set "${DEF_DEP}" "${url}" "${DEF_COMMIT}" >/dev/null \
+        && bash "${DEPS_SH}" sync --from "${DEF_DEP}=${DEF}" "${DEF_DEP}" >/dev/null \
+        || { echo "ERROR: could not pin ${DEF_DEP} in deps.toml / .deps from ${DEF}" >&2; exit 1; }
+) || exit 12
+else
 (
     cd "${MEMBER}" || exit 1
     if [ ! -e .fleet/.git ] && git config -f .gitmodules --get submodule..fleet.url >/dev/null 2>&1; then
@@ -190,6 +244,7 @@ fi
     git config submodule..fleet.url "${url}"
     git -C .fleet remote set-url origin "${url}" 2>/dev/null || true
 ) || exit 12
+fi
 
 # 4. The markers. An ADOPTED rollout records the .cicd pin its check.sh passed on (before apply.sh
 # ran); the rollout that ran records the pin THIS COMMIT sets. No .cicd: the key is left out.
