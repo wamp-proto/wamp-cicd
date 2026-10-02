@@ -3,6 +3,8 @@
 #
 #   apply-rollout.sh <member clone> <definition clone> <cohort>/<NNNN>-<name> --issue <n>
 #                    [--footer <line>] [--fleet-url <url>] [--repo <inventory name>] [--allow-unlanded]
+#   apply-rollout.sh <member clone> <definition clone> <cohort>/<NNNN>-<name> --plan [--repo <name>]
+#   apply-rollout.sh <member clone> <definition clone> <cohort> --next [--repo <name>]
 #
 # The credential-free primitive of "rollouts as migrations" (#64). It runs on the member's rollout
 # branch (cut beforehand, with its audit file, by the maintainer) and makes ONE commit:
@@ -44,6 +46,19 @@
 #                         (${FLEET_TOOLS_DIR}/../scripts/deps.sh set|sync)
 # apply.sh changes files (and may `git add`); it does not commit or push; it is re-runnable.
 #
+# WHAT WOULD IT DO? Two modes that change nothing, so that everything that asks - who is in the
+# wave of a rollout, who is behind - gets its answer from the code that will do it (#73):
+#   --plan   for one rollout: prints  PLAN <cohort>/<NNNN>-<name> adopt=<earlier rollouts, comma separated>
+#            and exits as the real run would before changing anything: 0 would apply, 10 already
+#            applied, 11 the tree is not clean (cannot tell), 13, 14.
+#   --next   for a cohort: the first rollout that has no marker AND is not already in place
+#            (its check.sh does not pass) - what is in place before it would be adopted:
+#                NEXT <NNNN>-<name> adopt=<...>          exit 0
+#            Everything in place but markers missing: the last one, adopting the others.
+#                UPTODATE                                 exit 10
+# Adoption is judged on the working tree as it is checked out: the caller makes sure that is
+# the default branch.
+#
 # Exit codes, so an orchestration loop can re-run a half-finished wave:
 #    0  applied (one commit made)
 #   10  already applied: the marker is there - nothing done
@@ -57,9 +72,9 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 die() { echo "ERROR: $*" >&2; exit "${2:-2}"; }
-usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-MEMBER=""; DEF=""; ROLLOUT=""; ISSUE=""; FOOTER=""; FLEET_URL=""; REPO=""; ALLOW_UNLANDED=0
+MEMBER=""; DEF=""; ROLLOUT=""; ISSUE=""; FOOTER=""; FLEET_URL=""; REPO=""; ALLOW_UNLANDED=0; MODE=apply
 while [ $# -gt 0 ]; do
     case "$1" in
         --issue) ISSUE="${2:-}"; shift 2 ;;
@@ -67,26 +82,33 @@ while [ $# -gt 0 ]; do
         --fleet-url) FLEET_URL="${2:-}"; shift 2 ;;
         --repo) REPO="${2:-}"; shift 2 ;;
         --allow-unlanded) ALLOW_UNLANDED=1; shift ;;
+        --plan) MODE=plan; shift ;;
+        --next) MODE=next; shift ;;
         -h|--help) usage ;;
         -*) die "unknown option: $1" ;;
         *) if [ -z "${MEMBER}" ]; then MEMBER="$1"; elif [ -z "${DEF}" ]; then DEF="$1"; elif [ -z "${ROLLOUT}" ]; then ROLLOUT="$1"; else usage; fi; shift ;;
     esac
 done
 [ -n "${MEMBER}" ] && [ -n "${DEF}" ] && [ -n "${ROLLOUT}" ] || usage
-[[ "${ISSUE}" =~ ^[0-9]+$ ]] || die "--issue <number> is required"
-[[ "${ROLLOUT}" =~ ^([a-z][a-z0-9-]*)/([0-9]{4}-[a-z0-9][a-z0-9-]*)$ ]] || die "rollout must be <cohort>/<NNNN>-<name>, got '${ROLLOUT}'"
-COHORT="${BASH_REMATCH[1]}"; RNAME="${BASH_REMATCH[2]}"
+[ "${MODE}" != apply ] || [[ "${ISSUE}" =~ ^[0-9]+$ ]] || die "--issue <number> is required"
+if [ "${MODE}" = next ]; then
+    [[ "${ROLLOUT}" =~ ^[a-z][a-z0-9-]*$ ]] || die "--next takes a cohort, got '${ROLLOUT}'"
+    COHORT="${ROLLOUT}"; RNAME=""
+else
+    [[ "${ROLLOUT}" =~ ^([a-z][a-z0-9-]*)/([0-9]{4}-[a-z0-9][a-z0-9-]*)$ ]] || die "rollout must be <cohort>/<NNNN>-<name>, got '${ROLLOUT}'"
+    COHORT="${BASH_REMATCH[1]}"; RNAME="${BASH_REMATCH[2]}"
+fi
 MEMBER="$(cd "${MEMBER}" 2>/dev/null && pwd)" || die "no such member clone"
 DEF="$(cd "${DEF}" 2>/dev/null && pwd)" || die "no such definition clone"
 git -C "${MEMBER}" rev-parse --git-dir >/dev/null 2>&1 || die "${MEMBER} is not a git repository"
 RDIR="${DEF}/rollouts/${COHORT}/${RNAME}"
-[ -d "${RDIR}" ] || die "no rollout ${ROLLOUT} in ${DEF}"
+[ "${MODE}" = next ] || [ -d "${RDIR}" ] || die "no rollout ${ROLLOUT} in ${DEF}"
 
 # The definition must be in a committed state: the marker names a commit, and what ran must be it.
 [ -z "$(git -C "${DEF}" status --porcelain -- rollouts fleet.toml 2>/dev/null)" ] \
     || die "the definition clone has uncommitted changes under rollouts/ or fleet.toml"
 DEF_COMMIT="$(git -C "${DEF}" rev-parse HEAD 2>/dev/null)" || die "${DEF} is not a git repository"
-if [ "${ALLOW_UNLANDED}" != 1 ]; then
+if [ "${ALLOW_UNLANDED}" != 1 ] && [ "${MODE}" = apply ]; then   # --plan / --next pin nothing
     landed=""
     while read -r ref; do
         [ -n "${ref}" ] || continue
@@ -101,7 +123,7 @@ if [ "${ALLOW_UNLANDED}" != 1 ]; then
         exit 2
     fi
 fi
-python3 "${HERE}/lib/check-rollout.py" "${RDIR}" --quiet || die "rollout ${ROLLOUT} is not valid (failed checks above)"
+[ "${MODE}" = next ] || python3 "${HERE}/lib/check-rollout.py" "${RDIR}" --quiet || die "rollout ${ROLLOUT} is not valid (failed checks above)"
 
 # Is this repository a member of the cohort? By its inventory name: --repo, else the clone's
 # directory name (which is the inventory name by convention, ~/work/<fleet>/<name>).
@@ -112,7 +134,7 @@ row="$(python3 "${HERE}/lib/inventory-repos.py" "${DEF}/fleet.toml" --cohort "${
 SLUG="$(cut -f2 <<<"${row}")"; DEFAULT_BRANCH="$(cut -f3 <<<"${row}")"
 
 marker() { echo ".waves/${COHORT}/$1.toml"; }
-if [ -e "${MEMBER}/$(marker "${RNAME}")" ]; then
+if [ "${MODE}" != next ] && [ -e "${MEMBER}/$(marker "${RNAME}")" ]; then
     echo "--> ${REPO}: ${ROLLOUT} is already applied ($(marker "${RNAME}"))"; exit 10
 fi
 if [ -n "$(git -C "${MEMBER}" status --porcelain)" ]; then
@@ -159,7 +181,7 @@ if [ -z "${url}" ]; then
         if [[ "${u}" =~ github\.com[:/](.+)$ ]]; then url="https://github.com/${BASH_REMATCH[1]%.git}.git"; break; fi
     done
 fi
-[ -n "${url}" ] || die "cannot tell the definition repository's forge URL: pass --fleet-url <url> (or set FLEET_DEF_URL)"
+[ -n "${url}" ] || [ "${MODE}" != apply ] || die "cannot tell the definition repository's forge URL: pass --fleet-url <url> (or set FLEET_DEF_URL)"
 [ -z "${TOOLING_SOURCE}" ] || DEF_DEP="$(basename "${url%.git}")"
 
 export FLEET_COHORT="${COHORT}" FLEET_ROLLOUT="${RNAME}" FLEET_REPO="${REPO}" FLEET_SLUG="${SLUG}"
@@ -179,14 +201,37 @@ cicd_pin() {
 CICD_BEFORE="$(cicd_pin)"
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# in_place <rollout>: is the repository already in that rollout's state (its check.sh passes)?
+in_place() {
+    local chk="${DEF}/rollouts/${COHORT}/$1/check.sh"
+    [ -x "${chk}" ] && (cd "${MEMBER}" && FLEET_ROLLOUT="$1" "${chk}") >/dev/null 2>&1
+}
+csv() { local IFS=,; echo "$*"; }
+
+# --next: the first rollout without a marker that is not in place; what is in place before it
+# would be adopted. Nothing is changed.
+if [ "${MODE}" = next ]; then
+    ADOPTED=()
+    while read -r r; do
+        [ -n "${r}" ] || continue
+        [ -e "${MEMBER}/$(marker "${r}")" ] && continue
+        if in_place "${r}"; then ADOPTED+=("${r}"); else echo "NEXT ${r} adopt=$(csv ${ADOPTED[@]+"${ADOPTED[@]}"})"; exit 0; fi
+    done < <([ -d "${DEF}/rollouts/${COHORT}" ] && find "${DEF}/rollouts/${COHORT}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+    if [ "${#ADOPTED[@]}" -gt 0 ]; then
+        # All in place, markers missing: the last one carries the markers of the others.
+        last="${ADOPTED[-1]}"; unset 'ADOPTED[-1]'
+        echo "NEXT ${last} adopt=$(csv ${ADOPTED[@]+"${ADOPTED[@]}"})"; exit 0
+    fi
+    echo "UPTODATE"; exit 10
+fi
+
 # 1. Adopt earlier rollouts of the cohort - or stop: nothing is skipped.
 ADOPTED=()
 while read -r earlier; do
     [ -n "${earlier}" ] || continue
     [[ "${earlier}" < "${RNAME}" ]] || continue
     [ -e "${MEMBER}/$(marker "${earlier}")" ] && continue
-    chk="${DEF}/rollouts/${COHORT}/${earlier}/check.sh"
-    if [ -x "${chk}" ] && (cd "${MEMBER}" && FLEET_ROLLOUT="${earlier}" "${chk}") >/dev/null 2>&1; then
+    if in_place "${earlier}"; then
         ADOPTED+=("${earlier}")
     else
         echo "ERROR: ${REPO}: the earlier rollout ${COHORT}/${earlier} has no marker here and cannot be adopted" >&2
@@ -194,6 +239,9 @@ while read -r earlier; do
         exit 13
     fi
 done < <(find "${DEF}/rollouts/${COHORT}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+
+# --plan: that is what would happen. Nothing was changed.
+if [ "${MODE}" = plan ]; then echo "PLAN ${ROLLOUT} adopt=$(csv ${ADOPTED[@]+"${ADOPTED[@]}"})"; exit 0; fi
 
 # 2. apply.sh, from the definition clone.
 SCRIPT_HASH=""

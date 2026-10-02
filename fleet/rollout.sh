@@ -217,16 +217,22 @@ cmd_init() {
         || die "fleet '${FLEET_NAME}': cannot select cohort '${cohort}'"
     echo "${cohort}" > "${d}/cohort"
     if [ -n "${migration}" ]; then
-        # THE WAVE: the members whose next rollout in this cohort is this one. A member that
-        # already has it is done; one still lacking an earlier rollout gets that one first.
-        local wname wslug wmain wcoh wnext wref
+        # THE WAVE: the members whose next rollout in this cohort is this one - as the RUNNER
+        # sees it (apply-rollout.sh --next, #73): an earlier rollout that is already in place
+        # is adopted, not a reason to be behind. A member that already has this rollout is done;
+        # one still lacking an earlier one gets that first; one that cannot be judged (not clean,
+        # or not on its default branch as landed) is left out, loudly.
+        local wname wslug wmain wcoh wnext wref wadopts
         : > "${d}/fleet.tsv.wave"
         while IFS=$'\t' read -r wname wslug wmain wcoh; do
             [ -n "${wname}" ] || continue
             if [ ! -e "${FLEET_WORK_DIR}/${wname}/.git" ]; then warn "${wname}: not cloned - left out of this wave"; continue; fi
             wref="$(default_ref "${FLEET_WORK_DIR}/${wname}" "${wmain}")"
-            wnext="$(next_rollout "${FLEET_WORK_DIR}/${wname}" "${wref}" "${defdir}" "${cohort}")"
-            if [ "${wnext}" = "${migration}" ]; then printf '%s\t%s\t%s\t%s\n' "${wname}" "${wslug}" "${wmain}" "${wcoh}" >> "${d}/fleet.tsv.wave"
+            IFS=$'\t' read -r wnext wadopts < <(next_due "${FLEET_WORK_DIR}/${wname}" "${wref}" "${defdir}" "${cohort}" "${wname}"; echo) || true
+            if [ "${wnext}" = "?" ]; then warn "${wname}: cannot tell what is next (${wadopts}) - left out of this wave"
+            elif [ "${wnext}" = "${migration}" ]; then
+                printf '%s\t%s\t%s\t%s\n' "${wname}" "${wslug}" "${wmain}" "${wcoh}" >> "${d}/fleet.tsv.wave"
+                [ -z "${wadopts}" ] || note "${wname}: in this wave; adopts ${cohort}/${wadopts//,/, ${cohort}/} (already in place)"
             elif [ -z "${wnext}" ] || [[ "${wnext}" > "${migration}" ]]; then note "${wname}: already has ${cohort}/${migration} - not in this wave"
             else note "${wname}: BEHIND - its next rollout is ${cohort}/${wnext}; not in this wave"; fi
         done < "${d}/fleet.tsv"

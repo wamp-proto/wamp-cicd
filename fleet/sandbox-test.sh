@@ -5,6 +5,9 @@
 # neutral = alpha/bravo with another exchange-remote and fleet name):
 #   M : master's .ai hook ADMITS maintainer merges  -> lands as a signed merge commit
 #   B : master's .ai hook is the OLD one             -> bootstrap: seal + fast-forward
+# The definition has TWO rollouts and the wave is the SECOND one's (#73): M has the first in
+# place BY HAND (no marker) - it is in the wave and the runner adopts the first; B and T have the
+# first with its marker; a fourth member, `lagging`, has neither and must be left out as behind.
 #   T : a TOOLING SOURCE (#71) - the definition repository pins it as .cicd, so it carries no
 #       submodules: its hooks are the pinned checkout .deps/wamp-ai (deps.toml), and the rollout
 #       pins the definition in deps.toml instead of adding .fleet/. Lands as a signed merge.
@@ -58,10 +61,19 @@ git -C "${C}" add -A; git -C "${C}" commit -qm "cicd with templates"; CICD="$(gi
 git clone -q --bare "${C}" "${SB}/src/wamp-cicd-origin.git"
 git -C "${C}" remote add origin "${SB}/src/wamp-cicd-origin.git"
 
-mkrepo() {  # mkrepo <name> <ai-commit> <default-branch>
+# first_in_place <dir> <name> <marker: yes|no>: the first rollout's result is in the repository -
+# with its marker (applied by the runner in an earlier wave) or without (applied by hand).
+first_in_place() {
+    echo "shared, for $2" > "$1/CONTRIBUTING.md"
+    [ "$3" = yes ] || return 0
+    mkdir -p "$1/.waves/${COHORT}"
+    printf 'rollout = "%s/%s"\nissue   = 7\n' "${COHORT}" "${MIG1}" > "$1/.waves/${COHORT}/${MIG1}.toml"
+}
+mkrepo() {  # mkrepo <name> <ai-commit> <default-branch> <marker of the first rollout: yes|no>
     local n="$1" ai="$2" br="$3" w="${SB}/work/$1"
     git init -q -b "${br}" "${w}"
     echo "# ${n}" > "${w}/README.md"
+    first_in_place "${w}" "${n}" "$4"
     mkdir -p "${w}/.audit"; echo "audit files" > "${w}/.audit/README.md"   # all 6 real repos track .audit/
     git -C "${w}" submodule add -q "${A}" .ai
     git -C "${w}/.ai" checkout -q "${ai}"
@@ -77,8 +89,12 @@ mkrepo() {  # mkrepo <name> <ai-commit> <default-branch>
     git -C "${w}" config commit.gpgsign true
     git -C "${w}" branch -q stale_merged           # contained in upstream/master -> prune deletes
 }
-mkrepo "${M}" "${AI_NEW}" master
-mkrepo "${B}" "${AI_OLD}" main          # exercises a per-repo default branch
+MIG1="0001-shared-contributing"; MIG="0002-second"
+mkrepo "${M}" "${AI_NEW}" master no     # the first rollout by hand: adopted in this wave
+mkrepo "${B}" "${AI_OLD}" main yes      # exercises a per-repo default branch
+# A member that has NOT got the first rollout: behind, and so not in the second one's wave.
+git init -q -b main "${SB}/work/lagging"; echo "# lagging" > "${SB}/work/lagging/README.md"
+git -C "${SB}/work/lagging" add -A; git -C "${SB}/work/lagging" commit -qm "initial"
 
 # The tooling source: no submodule. wamp-ai is a dependency pinned in deps.toml and checked out
 # into the gitignored .deps/ (scripts/deps.sh), which is where its hooks are.
@@ -87,6 +103,7 @@ mktooling() {  # mktooling <name> <default-branch>
     local n="$1" br="$2" w="${SB}/work/$1"
     git init -q -b "${br}" "${w}"
     echo "# ${n}" > "${w}/README.md"; echo ".deps/" > "${w}/.gitignore"
+    first_in_place "${w}" "${n}" yes
     mkdir -p "${w}/.audit"; echo "audit files" > "${w}/.audit/README.md"
     bash "${HERE}/../scripts/deps.sh" set --root "${w}" wamp-ai "https://github.com/sandbox/wamp-ai.git" "${AI_NEW}" >/dev/null
     git -C "${w}" add -A; git -C "${w}" commit -qm "initial"
@@ -158,6 +175,11 @@ slug = "sandbox/${T}"
 default_branch = "main"
 cohorts = ["${COHORT}"]
 [[repo]]
+name = "lagging"
+slug = "sandbox/lagging"
+default_branch = "main"
+cohorts = ["${COHORT}"]
+[[repo]]
 name = "not-cloned"
 slug = "sandbox/not-cloned"
 default_branch = "master"
@@ -170,16 +192,21 @@ cohorts = []
 FLEETEOF
 # The fleet's configuration, exactly as on a real host (fleet/lib/config.sh reads it): the
 # inventory as a symlink beside an .env holding only what differs from the defaults.
-# ... and its first rollout: a migration (apply.sh), with the issue text and an adoption check.
-MIG="0001-shared-contributing"
+# ... and its two rollouts, each a migration (apply.sh) with the issue text and an adoption check.
+RD1="${DEFD}/rollouts/${COHORT}/${MIG1}"; mkdir -p "${RD1}"
+printf 'name = "%s"\ncohort = "%s"\ndescription = "sandbox: deploy the shared CONTRIBUTING.md"\n' "${MIG1}" "${COHORT}" > "${RD1}/rollout.toml"
+printf '#!/usr/bin/env bash\nset -e\necho "shared, for ${FLEET_REPO}" > CONTRIBUTING.md\n' > "${RD1}/apply.sh"
+printf '#!/usr/bin/env bash\ntest -f CONTRIBUTING.md\n' > "${RD1}/check.sh"
+chmod +x "${RD1}/apply.sh" "${RD1}/check.sh"
+cp "${HERE}/../tests/fixtures/rollout-issue-template.md" "${RD1}/issue.md"
 RD="${DEFD}/rollouts/${COHORT}/${MIG}"; mkdir -p "${RD}"
-printf 'name = "%s"\ncohort = "%s"\ndescription = "sandbox: deploy the shared CONTRIBUTING.md"\n' "${MIG}" "${COHORT}" > "${RD}/rollout.toml"
-printf '#!/usr/bin/env bash\nset -e\necho "shared, for ${FLEET_REPO}" > CONTRIBUTING.md\n' > "${RD}/apply.sh"
-printf '#!/usr/bin/env bash\ntest -f CONTRIBUTING.md\n' > "${RD}/check.sh"
+printf 'name = "%s"\ncohort = "%s"\ndescription = "sandbox: the second rollout"\n' "${MIG}" "${COHORT}" > "${RD}/rollout.toml"
+printf '#!/usr/bin/env bash\nset -e\necho "second, for ${FLEET_REPO}" > SECOND.md\n' > "${RD}/apply.sh"
+printf '#!/usr/bin/env bash\ntest -f SECOND.md\n' > "${RD}/check.sh"
 chmod +x "${RD}/apply.sh" "${RD}/check.sh"
 cp "${HERE}/../tests/fixtures/rollout-issue-template.md" "${RD}/issue.md"
 printf '[submodule ".cicd"]\n\tpath = .cicd\n\turl = https://github.com/sandbox/%s.git\n' "${T}" > "${DEFD}/.gitmodules"
-git -C "${DEFD}" add -A; git -C "${DEFD}" commit -qm "the ${FLEET_ID} fleet: inventory and its first rollout"
+git -C "${DEFD}" add -A; git -C "${DEFD}" commit -qm "the ${FLEET_ID} fleet: inventory and its two rollouts"
 # its canonical forge URL resolves locally too (the landing updates submodules)
 DEFURL="https://github.com/sandbox/${FLEET_ID}-fleet.git"
 git clone -q --bare "${DEFD}" "${SB}/up/${FLEET_ID}-fleet.git"
@@ -201,7 +228,7 @@ R="${HERE}/rollout.sh"
 ONLY=()   # the rollout's cohort selects the repositories
 step() { echo; echo "################ $* ################"; }
 
-step "next (before)";  "${HERE}/next.sh"
+step "next (before)";  NEXT_BEFORE="$("${HERE}/next.sh")"; echo "${NEXT_BEFORE}"
 step init;             "${R}" init "${ROLLOUT}" --cohort "${COHORT}" --rollout "${MIG}" --cicd "${CICD}" --ai "${AI_NEW}"
 step "prune (go)";     "${R}" prune "${ONLY[@]}" --go
 step preflight;        "${R}" preflight "${ONLY[@]}" || echo "(preflight exit $? - expected: gitsign x509 not configured in sandbox)"
@@ -262,7 +289,7 @@ for n in "${M}" "${B}" "${T}"; do
     br="$(git --git-dir="${SB}/up/${n}.git" symbolic-ref --short HEAD)"
     check "${n}: upstream ${br} tip is signed" "git --git-dir='${SB}/up/${n}.git' cat-file commit '${br}' | grep -q '^gpgsig'"
     check "${n}: the rollout's commit landed" "git --git-dir='${SB}/up/${n}.git' log --format=%s '${br}' | grep -q 'Apply rollout ${COHORT}/${MIG} (#42)'"
-    check "${n}: apply.sh's change is on ${br}" "git --git-dir='${SB}/up/${n}.git' show '${br}:CONTRIBUTING.md' | grep -qx 'shared, for ${n}'"
+    check "${n}: apply.sh's change is on ${br}" "git --git-dir='${SB}/up/${n}.git' show '${br}:SECOND.md' | grep -qx 'second, for ${n}'"
     check "${n}: the marker is on ${br}" "git --git-dir='${SB}/up/${n}.git' cat-file -e '${br}:.waves/${COHORT}/${MIG}.toml'"
     if [ "${n}" = "${T}" ]; then
         check "${n}: a tooling source - no submodule at all on ${br}" "[ -z \"\$(git --git-dir='${SB}/up/${n}.git' ls-tree -r '${br}' | awk '\$1==\"160000\"')\" ] && ! git --git-dir='${SB}/up/${n}.git' cat-file -e '${br}:.gitmodules' 2>/dev/null"
@@ -279,7 +306,11 @@ check "${M}: landed as a merge commit (2 parents)" \
 check "${T}: the tooling source landed as a merge commit (its .deps/wamp-ai hook admits one)" \
     "[ \$(git --git-dir='${SB}/up/${T}.git' log -1 --format=%p main | wc -w) -eq 2 ]"
 check "re-applying the rollout exits 10" "[ '${REAPPLY_RC}' = 10 ]"
-check "after the wave nobody is behind" "grep -q '^0 repository/cohort pair(s) behind' <<<'${NEXT_AFTER}'"
+check "${M}: the first rollout, in place by hand, was ADOPTED in the same commit (a marker without a script hash)" \
+    "git --git-dir='${SB}/up/${M}.git' show 'master:.waves/${COHORT}/${MIG1}.toml' | grep -q '^adopted = true'"
+check "before the wave: ${M} was due for the second rollout, adopting the first" "grep -q '^${M} .*${MIG}  (adopts ${MIG1})' <<<\"\${NEXT_BEFORE}\""
+check "before the wave: lagging was due for the FIRST rollout" "grep -q '^lagging .*${MIG1}\$' <<<\"\${NEXT_BEFORE}\""
+check "after the wave only lagging is behind" "grep -q '^1 repository/cohort pair(s) behind' <<<'${NEXT_AFTER}'"
 check "${B}: landed by fast-forward onto the seal" \
     "git --git-dir='${SB}/up/${B}.git' log -1 --format=%s main | grep -q '^Seal #42'"
 check "PR titled like its issue" "grep -q -- '--title .*(#42)' '${SB}/pr-create.log' && ! grep -q -- '--title Fleet rollout' '${SB}/pr-create.log'"
