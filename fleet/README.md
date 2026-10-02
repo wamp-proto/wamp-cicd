@@ -89,7 +89,7 @@ its last word.** A `go` anywhere else is refused.
 | recipe | does |
 |---|---|
 | `just fleet-check` | is the fleet's configuration valid: only known keys, permissions, the inventory against its contract, its cohorts (read-only) |
-| `just fleet-next [--cohort C]` | who is behind: per repository and cohort, how many rollouts it has and which is next (read-only) |
+| `just fleet-next [--cohort C]` | who is behind: per repository and cohort, how many rollouts it has, which is next and what that one would adopt (read-only) |
 | `just fleet-apply-rollout <member clone> <definition clone> <cohort>/<NNNN>-<name> --issue N` | apply one rollout to one member: `apply.sh`, the `.fleet/` pin, the `.waves/` marker, one commit (no credentials; see below) |
 | `just fleet-where [full] [--cohort C]` | read-only health table: branch, clean, default branch = upstream = exchange, hooks, signing, `.cicd`/`.ai` pins, submodules, managed-file drift, `just where` |
 | `just fleet-rollout init <name> --cohort C --rollout <NNNN>-<name>` | start a wave of a rollout from the definition: freeze the members whose NEXT rollout it is, the pin pair, its issue text (`--issue-template F` for a rollout that is not a migration) |
@@ -113,9 +113,16 @@ A rollout lives in the fleet's definition repository, and every member records w
     issue.md       the issue text
 ```
 
-- A cohort's rollouts are applied **in order, and none is skipped**. What is next for a member is
-  the first one without a marker on its default branch (`just fleet-next`). A wave of a rollout is
-  the members for which it is next.
+- A cohort's rollouts are applied **in order, and none is skipped**. What is **next** for a member
+  is the first rollout that has no marker on its default branch **and is not already in place**
+  (its `check.sh` does not pass): what is in place is adopted by the runner when it applies the
+  next one, so it is nothing to do. A wave of a rollout is the members whose next rollout it is;
+  a member still lacking an earlier one gets that first. The answer always comes from the runner
+  itself, which has two modes that change nothing: `apply-rollout.sh <member> <definition>
+  <cohort> --next` and `... <cohort>/<NNNN>-<name> --plan` (what it would adopt, and the exit code
+  the run would give). `just fleet-next` and `fleet-rollout init --rollout` use them. Adoption is
+  judged on the checked-out tree, so a clone that is not clean and on its default branch as
+  landed is reported as "cannot tell" and left out of a wave - never guessed.
 - **`apply.sh`** runs in the member's root, on the rollout branch, with `FLEET_NAME`,
   `FLEET_COHORT`, `FLEET_ROLLOUT`, `FLEET_REPO`, `FLEET_SLUG`, `FLEET_DEFAULT_BRANCH`,
   `FLEET_DEF_DIR` and `FLEET_TOOLS_DIR` set. It changes files; it does not commit, push or talk to

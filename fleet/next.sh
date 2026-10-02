@@ -28,7 +28,7 @@ if [ -n "${COHORT}" ]; then REPOS_TSV="$(python3 "${FLEET_TOOLS_DIR}/lib/invento
 else REPOS_TSV="$(python3 "${FLEET_TOOLS_DIR}/lib/inventory-repos.py" "${FLEET_INVENTORY}")" || exit 1; fi
 
 printf '%-30s %-12s %-8s %s\n' REPO COHORT APPLIED NEXT
-behind=0
+behind=0; unknown=0
 while IFS=$'\t' read -r name _slug main cohorts; do
     [ -n "${name}" ] || continue
     d="${FLEET_WORK_DIR}/${name}"
@@ -37,10 +37,12 @@ while IFS=$'\t' read -r name _slug main cohorts; do
         [ -z "${COHORT}" ] || [ "${c}" = "${COHORT}" ] || continue
         if [ ! -e "${d}/.git" ]; then printf '%-30s %-12s %-8s %s\n' "${name}" "${c}" "?" "(not cloned)"; continue; fi
         ref="$(default_ref "${d}" "${main}")"
-        nx="$(next_rollout "${d}" "${ref}" "${DEF}" "${c}")"
-        [ -z "${nx}" ] || behind=$((behind+1))
+        IFS=$'\t' read -r nx adopts < <(next_due "${d}" "${ref}" "${DEF}" "${c}" "${name}"; echo) || true
+        if [ "${nx}" = "?" ]; then unknown=$((unknown+1)); nx="? (${adopts})"
+        elif [ -n "${nx}" ]; then behind=$((behind+1)); [ -z "${adopts}" ] || nx="${nx}  (adopts ${adopts//,/, })"; fi
         printf '%-30s %-12s %-8s %s\n' "${name}" "${c}" "$(applied_count "${d}" "${ref}" "${DEF}" "${c}")" "${nx:-up to date}"
     done
 done <<<"${REPOS_TSV}"
 echo ""
+[ "${unknown}" = 0 ] || echo "${unknown} could not be judged: a clone must be clean and on its default branch as landed"
 echo "${behind} repository/cohort pair(s) behind (definition: ${DEF} @ $(git -C "${DEF}" rev-parse --short HEAD 2>/dev/null || echo '?'))"

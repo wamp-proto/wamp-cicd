@@ -200,6 +200,60 @@ echo "== what is next (fleet/lib/rollouts.sh)"
 [ "$(next_rollout "$B" main "$DEF" core)" = "0001-first" ] && ok "on a branch without markers (not landed): the first one is next" || bad "next: unlanded"
 [ "$(default_ref "$A" main)" = main ] && ok "default_ref: the local branch when there is no upstream" || bad "default_ref"
 
+echo "== what WOULD it do: --plan and --next change nothing and answer as the runner would act (#73)"
+# Two rollouts; "in place" means the rollout's file is there. hand = 0001 in place by hand (no
+# marker), none = nothing, both = both in place by hand.
+PF="${WORK}/plan-fleet"; q git init "$PF"; mkdir -p "$PF/rollouts/core"
+{ echo 'schema = 2'; printf '[[cohort]]\nname = "core"\ndescription = "c"\n'
+  for n in hand none both; do printf '[[repo]]\nname = "%s"\nslug = "acme/%s"\ndefault_branch = "main"\ncohorts = ["core"]\n' "$n" "$n"; done
+  printf '[[repo]]\nname = "outside"\nslug = "acme/outside"\ndefault_branch = "main"\ncohorts = []\n'; } > "$PF/fleet.toml"
+for pair in 0001-a:A.txt 0002-b:B.txt; do
+  d="$PF/rollouts/core/${pair%%:*}"; mkdir -p "$d"
+  printf 'name = "%s"\ncohort = "core"\ndescription = "test rollout"\n' "${pair%%:*}" > "$d/rollout.toml"
+  printf '#!/usr/bin/env bash\nset -e\necho applied > %s\n' "${pair#*:}" > "$d/apply.sh"
+  printf '#!/usr/bin/env bash\ntest -f %s\n' "${pair#*:}" > "$d/check.sh"
+  chmod +x "$d/apply.sh" "$d/check.sh"; echo "issue text" > "$d/issue.md"
+done
+q git -C "$PF" add -A; q git -C "$PF" commit -m "definition: two rollouts with checks"
+pmember() {  # pmember <name> <files in place by hand...>  -> a clone on main, nothing cut
+  local m="${WORK}/p-$1" f; q git init "$m"; echo "$1" > "$m/README.md"
+  for f in "${@:2}"; do echo "by hand" > "$m/$f"; done
+  q git -C "$m" add -A; q git -C "$m" commit -m seed
+}
+pmember hand A.txt; pmember none; pmember both A.txt B.txt
+PH="${WORK}/p-hand"; PN="${WORK}/p-none"; PB="${WORK}/p-both"
+snap() { echo "$(git -C "$1" rev-parse HEAD) $(git -C "$1" status --porcelain | wc -l) $(ls -A "$1" | tr '\n' ' ')"; }
+plan() { "${RUN}" "$@" > "${WORK}/log" 2>&1; }
+s0="$(snap "$PH")"
+plan "$PH" "$PF" core/0002-b --plan --repo hand; rc=$?
+[ "$rc" = 0 ] && [ "$(tail -1 "${WORK}/log")" = "PLAN core/0002-b adopt=0001-a" ] && ok "--plan: 0001 in place by hand -> would adopt it and apply 0002 (no --issue needed)" || bad "plan adopt" "rc=$rc"
+[ "$(snap "$PH")" = "$s0" ] && ok "--plan changed nothing: HEAD, status, files" || bad "plan changed something" "$(snap "$PH")"
+plan "$PN" "$PF" core/0002-b --plan --repo none; [ $? = 13 ] && ok "--plan: an earlier rollout neither marked nor in place -> exit 13, as the run would" || bad "plan 13"
+plan "$PN" "$PF" core/0001-a --plan --repo none; [ $? = 0 ] && [ "$(tail -1 "${WORK}/log")" = "PLAN core/0001-a adopt=" ] && ok "--plan of the first rollout: would apply, adopts nothing" || bad "plan first"
+plan "${WORK}/p-none" "$PF" core/0001-a --plan --repo outside; [ $? = 14 ] && ok "--plan: not a member -> exit 14" || bad "plan 14"
+echo x > "$PH/stray"; plan "$PH" "$PF" core/0002-b --plan --repo hand; [ $? = 11 ] && ok "--plan on a tree that is not clean: exit 11 (cannot tell)" || bad "plan 11"; rm -f "$PH/stray"
+nxt() { "${RUN}" "$1" "$PF" core --next --repo "$2" 2>/dev/null | tail -1; }
+[ "$(nxt "$PH" hand)" = "NEXT 0002-b adopt=0001-a" ] && ok "--next: 0001 in place by hand -> 0002 is next, adopting 0001" || bad "next hand" "$(nxt "$PH" hand)"
+[ "$(nxt "$PN" none)" = "NEXT 0001-a adopt=" ] && ok "--next: nothing in place -> 0001 is next" || bad "next none" "$(nxt "$PN" none)"
+[ "$(nxt "$PB" both)" = "NEXT 0002-b adopt=0001-a" ] && ok "--next: everything in place, no markers -> the last one, adopting the others" || bad "next both" "$(nxt "$PB" both)"
+[ "$(snap "$PH")" = "$s0" ] && ok "--next changed nothing" || bad "next changed something"
+"${RUN}" "$PH" "$PF" nonsense/x --next >/dev/null 2>&1; [ $? = 2 ] && ok "--next takes a cohort, not a rollout" || bad "next usage"
+# the same answers through the library the fleet scripts use, and its "cannot tell"
+FLEET_TOOLS_DIR="${HERE}/../fleet"
+[ "$(next_due "$PH" main "$PF" core hand)" = "$(printf '0002-b\t0001-a')" ] && ok "next_due: <rollout><TAB><adopts>" || bad "next_due hand" "$(next_due "$PH" main "$PF" core hand)"
+[ "$(next_rollout "$PH" main "$PF" core)" = "0001-a" ] && ok "(the marker-only next_rollout says 0001 here - which is why the wave was empty)" || bad "next_rollout"
+q git -C "$PH" checkout -b fix_9; echo w > "$PH/w"; q git -C "$PH" add -A; q git -C "$PH" commit -m work
+[[ "$(next_due "$PH" main "$PF" core hand)" == "?"$'\t'"not checked out at main" ]] && ok "next_due: a clone not at its default branch -> cannot tell, never a guess" || bad "next_due off-branch" "$(next_due "$PH" main "$PF" core hand)"
+q git -C "$PH" checkout main
+echo x > "$PH/stray"; [[ "$(next_due "$PH" main "$PF" core hand)" == "?"$'\t'"the working tree is not clean" ]] && ok "next_due: not clean -> cannot tell" || bad "next_due dirty"; rm -f "$PH/stray"
+# after the real run: plan says already applied, next says up to date
+q git -C "$PH" checkout -b fix_10
+run "$PH" "$PF" core/0002-b --issue 10 --repo hand --fleet-url "$URL"; rc=$?
+[ "$rc" = 0 ] && grep -q '^adopted = true' "$PH/.waves/core/0001-a.toml" && ok "the real run does what --plan said: 0002 applied, 0001 adopted" || bad "real run after plan" "rc=$rc"
+plan "$PH" "$PF" core/0002-b --plan --repo hand; [ $? = 10 ] && ok "--plan afterwards: exit 10, already applied" || bad "plan 10"
+"${RUN}" "$PH" "$PF" core --next --repo hand > "${WORK}/log" 2>&1; [ $? = 10 ] && [ "$(tail -1 "${WORK}/log")" = UPTODATE ] && ok "--next afterwards: UPTODATE, exit 10" || bad "next uptodate"
+[ -z "$(next_due "$PH" fix_10 "$PF" core hand)" ] && ok "next_due afterwards: nothing" || bad "next_due uptodate" "$(next_due "$PH" fix_10 "$PF" core hand)"
+
 echo "== lag check (fleet/lag-check.sh), as a member's CI runs it"
 LAG="${HERE}/../fleet/lag-check.sh"
 lag() { ( cd "$1" && env -u GITHUB_REPOSITORY bash "${LAG}" "${@:2}" ) > "${WORK}/log" 2>&1; }
