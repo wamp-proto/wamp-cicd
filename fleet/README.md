@@ -154,7 +154,10 @@ A rollout lives in the fleet's definition repository, and every member records w
   ([`../scripts/deps.sh`](../scripts/deps.sh)), again from the local clone. `apply.sh` and
   `check.sh` get `FLEET_TOOLING_SOURCE` (`.cicd` or `.ai`; empty for an ordinary member) and
   write their pins with `deps.sh set` instead of moving submodules. Markers, arguments and exit
-  codes are the same. Its lag check: `lag-check.sh --fleet-dir .deps/<definition repository>`.
+  codes are the same. They also get `FLEET_DEF_URL` and, in a tooling source, `FLEET_DEF_DEP`
+  (the definition's name under `.deps/`). The lag check is the same line in every layout: it
+  uses `.fleet/` where there is one, else the one definition under `.deps/` (`--fleet-dir` names
+  it explicitly).
   The fleet scripts find the hooks of such a member through [`lib/aidir.sh`](lib/aidir.sh).
 - **The definition's forge URL** (for `.gitmodules` / `deps.toml`): what the member already
   records, else `--fleet-url`, else `FLEET_DEF_URL` (environment or `<fleet>.env`), else a forge
@@ -259,6 +262,6 @@ adoption, `.fleet/` with the network disabled, the real commit hook; next; the l
 rollout contract; tooling sources; `FLEET_DEF_URL`), [`test-deps.sh`](../tests/test-deps.sh)
 (`deps.sh`), [`test-ai-dir.sh`](../tests/test-ai-dir.sh) (the hooks in all three layouts, and
 `just land` in a tooling source), and [`sandbox-test.sh`](sandbox-test.sh) twice: a whole wave of a migration
-(init → cut → apply-rollout → land in both landing modes → finish) against local bare
-repositories, once in the WAMP shape and once with neutral names (`SANDBOX_FLAVOUR=neutral`),
+(init → cut → apply-rollout → land in both landing modes → finish; one member is a tooling
+source) against local bare repositories, once in the WAMP shape and once with neutral names (`SANDBOX_FLAVOUR=neutral`),
 asserting the result.

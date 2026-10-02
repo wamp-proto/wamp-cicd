@@ -5,6 +5,9 @@
 # neutral = alpha/bravo with another exchange-remote and fleet name):
 #   M : master's .ai hook ADMITS maintainer merges  -> lands as a signed merge commit
 #   B : master's .ai hook is the OLD one             -> bootstrap: seal + fast-forward
+#   T : a TOOLING SOURCE (#71) - the definition repository pins it as .cicd, so it carries no
+#       submodules: its hooks are the pinned checkout .deps/wamp-ai (deps.toml), and the rollout
+#       pins the definition in deps.toml instead of adding .fleet/. Lands as a signed merge.
 # Each has local bare `upstream`, `origin` (fork) and exchange remotes, a `.ai`
 # submodule carrying the REAL wamp-ai justfile (generate-audit-file), and signing via a
 # throwaway ssh key standing in for gitsign. `gh` and `file-issue.sh` are stubs.
@@ -22,9 +25,9 @@ AI_JUSTFILE="${AI_JUSTFILE:-${HERE}/../.deps/wamp-ai/justfile}"
 # other repository names, another exchange-remote name and another fleet name, to prove the
 # tools assume nothing WAMP-specific (#58). M = merge-admitting repo, B = bootstrap repo.
 if [ "${SANDBOX_FLAVOUR:-wamp}" = neutral ]; then
-    M=alpha; B=bravo; EXCH=hub; FLEET_ID=acme; ROLLOUT=rollout-1; COHORT=core
+    M=alpha; B=bravo; T=toolkit; EXCH=hub; FLEET_ID=acme; ROLLOUT=rollout-1; COHORT=core
 else
-    M=autobahn-python; B=txaio; EXCH=exchange; FLEET_ID=sbx; ROLLOUT=sbx; COHORT=way-a
+    M=autobahn-python; B=txaio; T=wamp-cicd; EXCH=exchange; FLEET_ID=sbx; ROLLOUT=sbx; COHORT=way-a
 fi
 rm -rf "${SB}"; mkdir -p "${SB}"/{bin,up,fork,exch,work,src}
 export GIT_CONFIG_GLOBAL="${SB}/gitconfig"
@@ -77,6 +80,30 @@ mkrepo() {  # mkrepo <name> <ai-commit> <default-branch>
 mkrepo "${M}" "${AI_NEW}" master
 mkrepo "${B}" "${AI_OLD}" main          # exercises a per-repo default branch
 
+# The tooling source: no submodule. wamp-ai is a dependency pinned in deps.toml and checked out
+# into the gitignored .deps/ (scripts/deps.sh), which is where its hooks are.
+git clone -q --bare "${A}" "${SB}/up/wamp-ai.git"
+mktooling() {  # mktooling <name> <default-branch>
+    local n="$1" br="$2" w="${SB}/work/$1"
+    git init -q -b "${br}" "${w}"
+    echo "# ${n}" > "${w}/README.md"; echo ".deps/" > "${w}/.gitignore"
+    mkdir -p "${w}/.audit"; echo "audit files" > "${w}/.audit/README.md"
+    bash "${HERE}/../scripts/deps.sh" set --root "${w}" wamp-ai "https://github.com/sandbox/wamp-ai.git" "${AI_NEW}" >/dev/null
+    git -C "${w}" add -A; git -C "${w}" commit -qm "initial"
+    for kind in up fork exch; do git clone -q --bare "${w}" "${SB}/${kind}/${n}.git"; done
+    git -C "${w}" remote add upstream "https://github.com/sandbox/${n}.git"
+    git -C "${w}" remote add origin   "https://github.com/sandbox-fork/${n}.git"
+    git -C "${w}" remote add "${EXCH}" "${SB}/exch/${n}.git"
+    for r in upstream origin "${EXCH}"; do git -C "${w}" fetch -q "${r}"; done
+    bash "${HERE}/../scripts/deps.sh" sync --root "${w}" >/dev/null
+    git -C "${w}" config core.hooksPath .deps/wamp-ai/.githooks
+    git -C "${w}" config gpg.format ssh
+    git -C "${w}" config user.signingkey "${SB}/signkey.pub"
+    git -C "${w}" config commit.gpgsign true
+    git -C "${w}" branch -q stale_merged
+}
+mktooling "${T}" main
+
 # -- stubs -----------------------------------------------------------------------------------
 cat > "${SB}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -101,8 +128,9 @@ EOF
 chmod +x "${SB}/bin/gh" "${SB}/bin/file-issue.sh"
 export PATH="${SB}/bin:${PATH}"
 
-# The inventory, schema 2: the rollout's cohort has M and B; a third repository is in ANOTHER
-# cohort only (and not even cloned), so it must not be touched; a fourth is in no cohort.
+# The inventory, schema 2: the rollout's cohort has M, B and the tooling source T; another
+# repository is in ANOTHER cohort only (and not even cloned), so it must not be touched; one more
+# is in no cohort. The definition pins T as its .cicd: that is what makes T a tooling source.
 mkdir -p "${SB}/config"; chmod 700 "${SB}/config"
 DEFD="${SB}/def/${FLEET_ID}-fleet"; mkdir -p "${DEFD}"; git init -q "${DEFD}"
 cat > "${DEFD}/fleet.toml" <<FLEETEOF
@@ -122,6 +150,11 @@ cohorts = ["${COHORT}", "other"]
 [[repo]]
 name = "${B}"
 slug = "sandbox/${B}"
+default_branch = "main"
+cohorts = ["${COHORT}"]
+[[repo]]
+name = "${T}"
+slug = "sandbox/${T}"
 default_branch = "main"
 cohorts = ["${COHORT}"]
 [[repo]]
@@ -145,6 +178,7 @@ printf '#!/usr/bin/env bash\nset -e\necho "shared, for ${FLEET_REPO}" > CONTRIBU
 printf '#!/usr/bin/env bash\ntest -f CONTRIBUTING.md\n' > "${RD}/check.sh"
 chmod +x "${RD}/apply.sh" "${RD}/check.sh"
 cp "${HERE}/../tests/fixtures/rollout-issue-template.md" "${RD}/issue.md"
+printf '[submodule ".cicd"]\n\tpath = .cicd\n\turl = https://github.com/sandbox/%s.git\n' "${T}" > "${DEFD}/.gitmodules"
 git -C "${DEFD}" add -A; git -C "${DEFD}" commit -qm "the ${FLEET_ID} fleet: inventory and its first rollout"
 # its canonical forge URL resolves locally too (the landing updates submodules)
 DEFURL="https://github.com/sandbox/${FLEET_ID}-fleet.git"
@@ -177,7 +211,7 @@ step "cut (go)";       "${R}" cut "${ONLY[@]}" --go
 
 step "apply (the AI host: fetch the cut branch from the exchange, apply the rollout, push)"
 mkdir -p "${SB}/aihost"
-for n in "${M}" "${B}"; do
+for n in "${M}" "${B}" "${T}"; do
     t="${SB}/aihost/${n}"; git clone -q "${SB}/exch/${n}.git" "${t}" -b fix_42
     git -C "${t}" config commit.gpgsign false
     "${HERE}/apply-rollout.sh" "${t}" "${DEFD}" "${COHORT}/${MIG}" --issue 42 --fleet-url "${DEFURL}" \
@@ -204,11 +238,11 @@ else
 fi
 step "finish (dry)";   "${R}" finish
 step "finish (go)";    "${R}" finish --go
-for n in "${M}" "${B}"; do git -C "${SB}/work/${n}" fetch -q upstream; done
+for n in "${M}" "${B}" "${T}"; do git -C "${SB}/work/${n}" fetch -q upstream; done
 step "next (after)";   "${HERE}/next.sh"; NEXT_AFTER="$("${HERE}/next.sh" | tail -1)"
 
 step "VERIFY upstream master"
-for n in "${M}" "${B}"; do
+for n in "${M}" "${B}" "${T}"; do
     echo "== ${n}"
     br="$(git --git-dir="${SB}/up/${n}.git" symbolic-ref --short HEAD)"; echo "   default branch: ${br}"
     git --git-dir="${SB}/up/${n}.git" log --format='   %h parents=%p  %s' -4 "${br}"
@@ -224,25 +258,32 @@ done
 step "ASSERT"
 nfail=0
 check() { if eval "$2"; then echo "   ok   $1"; else echo "   FAIL $1"; nfail=$((nfail+1)); fi; }
-for n in "${M}" "${B}"; do
+for n in "${M}" "${B}" "${T}"; do
     br="$(git --git-dir="${SB}/up/${n}.git" symbolic-ref --short HEAD)"
     check "${n}: upstream ${br} tip is signed" "git --git-dir='${SB}/up/${n}.git' cat-file commit '${br}' | grep -q '^gpgsig'"
     check "${n}: the rollout's commit landed" "git --git-dir='${SB}/up/${n}.git' log --format=%s '${br}' | grep -q 'Apply rollout ${COHORT}/${MIG} (#42)'"
     check "${n}: apply.sh's change is on ${br}" "git --git-dir='${SB}/up/${n}.git' show '${br}:CONTRIBUTING.md' | grep -qx 'shared, for ${n}'"
     check "${n}: the marker is on ${br}" "git --git-dir='${SB}/up/${n}.git' cat-file -e '${br}:.waves/${COHORT}/${MIG}.toml'"
-    check "${n}: .fleet/ is pinned to the definition's commit" "[ \"\$(git --git-dir='${SB}/up/${n}.git' ls-tree '${br}' .fleet | awk '{print \$3}')\" = \"\$(git -C '${DEFD}' rev-parse HEAD)\" ]"
+    if [ "${n}" = "${T}" ]; then
+        check "${n}: a tooling source - no submodule at all on ${br}" "[ -z \"\$(git --git-dir='${SB}/up/${n}.git' ls-tree -r '${br}' | awk '\$1==\"160000\"')\" ] && ! git --git-dir='${SB}/up/${n}.git' cat-file -e '${br}:.gitmodules' 2>/dev/null"
+        check "${n}: deps.toml pins the definition at its commit" "git --git-dir='${SB}/up/${n}.git' show '${br}:deps.toml' | grep -A2 '^\[${FLEET_ID}-fleet\]' | grep -q \"commit = \\\"\$(git -C '${DEFD}' rev-parse HEAD)\\\"\""
+    else
+        check "${n}: .fleet/ is pinned to the definition's commit" "[ \"\$(git --git-dir='${SB}/up/${n}.git' ls-tree '${br}' .fleet | awk '{print \$3}')\" = \"\$(git -C '${DEFD}' rev-parse HEAD)\" ]"
+    fi
     for kind in up fork exch; do
         check "${n}: fix_42 deleted on ${kind}" "! git --git-dir='${SB}/${kind}/${n}.git' rev-parse -q --verify refs/heads/fix_42 >/dev/null"
     done
 done
 check "${M}: landed as a merge commit (2 parents)" \
     "[ \$(git --git-dir='${SB}/up/${M}.git' log -1 --format=%p master | wc -w) -eq 2 ]"
+check "${T}: the tooling source landed as a merge commit (its .deps/wamp-ai hook admits one)" \
+    "[ \$(git --git-dir='${SB}/up/${T}.git' log -1 --format=%p main | wc -w) -eq 2 ]"
 check "re-applying the rollout exits 10" "[ '${REAPPLY_RC}' = 10 ]"
 check "after the wave nobody is behind" "grep -q '^0 repository/cohort pair(s) behind' <<<'${NEXT_AFTER}'"
 check "${B}: landed by fast-forward onto the seal" \
     "git --git-dir='${SB}/up/${B}.git' log -1 --format=%s main | grep -q '^Seal #42'"
 check "PR titled like its issue" "grep -q -- '--title .*(#42)' '${SB}/pr-create.log' && ! grep -q -- '--title Fleet rollout' '${SB}/pr-create.log'"
-check "the rollout froze exactly its cohort's members" "[ \"\$(cut -f1 '${SB}/state/${ROLLOUT}/fleet.tsv' | tr '\n' ' ')\" = '${M} ${B} ' ]"
+check "the rollout froze exactly its cohort's members" "[ \"\$(cut -f1 '${SB}/state/${ROLLOUT}/fleet.tsv' | tr '\n' ' ')\" = '${M} ${B} ${T} ' ]"
 check "a second rollout was refused while this one was open" "[ '${SECOND_REFUSED}' = yes ]"
 check "finish closed the rollout (no current rollout; its state kept)" "[ ! -e '${SB}/state/current' ] && [ -f '${SB}/state/${ROLLOUT}/landed.tsv' ]"
 check "the issue names the cohort" "grep -q 'cohort \*\*${COHORT}\*\*' '${SB}/state/${ROLLOUT}/drafts/${B}.md' 2>/dev/null || grep -rq '${COHORT}' '${SB}/state/${ROLLOUT}/drafts/'"
