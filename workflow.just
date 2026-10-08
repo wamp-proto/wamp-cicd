@@ -464,6 +464,17 @@ where:
         else echo "  audit file   MISSING for this branch - expected $(just --justfile "{{justfile()}}" _workflow-audit-path "${branch}")"; fi
     fi
     echo "  submodules   ${subs_state#*|}"
+    open_decisions="$(just --justfile "{{justfile()}}" _workflow-open-decisions HEAD)"
+    if [ -z "${open_decisions}" ]; then
+        echo "  decisions    none open"
+    else
+        n="$(printf '%s\n' "${open_decisions}" | wc -l | tr -d ' ')"
+        echo "  decisions    ${n} OPEN - a required decision; this branch does not land until it is taken:"
+        printf '%s\n' "${open_decisions}" | while IFS="$(printf '\t')" read -r path question; do
+            echo "               ${path}"
+            echo "                 ${question}"
+        done
+    fi
     echo "  signing      ${signing}"
     [ -n "${signing_note}" ] && echo "               ${signing_note}"
     if [ -n "${scope_offenders}" ]; then
@@ -633,6 +644,27 @@ where:
 # Note that ANY value other than the hooks directory means not enforced - unset
 # and `/dev/null` alike. A check that only tested for "unset" would have called
 # that clone healthy.
+# Open A18 decisions COMMITTED at a ref (default HEAD): one "path<TAB>question" line each.
+#
+# An aspect that needs a human judgement stops a rollout at a question, recorded in the
+# target as `.decisions/<aspect>/OPEN-<YYYYMMDD>-<type>[-N].toml`; the maintainer's
+# signed decision renames it into the decision file (typedefint/aaiare-fleet-manager#42).
+# While one is open, a required decision has not been taken - `land` refuses such a
+# branch and `where` lists them (#76). COMMITTED is what counts, as for the audit file:
+# the branch is what lands, not the working tree.
+_workflow-open-decisions ref='HEAD':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git rev-parse --verify --quiet "{{ref}}^{commit}" >/dev/null || exit 0
+    # `|| true`: NO open decision is the normal case, and grep's "no match" (exit 1)
+    # under pipefail would otherwise fail this recipe - and with it every `land`.
+    { git ls-tree -r --name-only "{{ref}}" -- .decisions 2>/dev/null \
+        | grep -E '^\.decisions/[^/]+/OPEN-[^/]*\.toml$' || true; } \
+      | while read -r path; do
+          question="$(git show "{{ref}}:${path}" | sed -n 's/^question = "\(.*\)"$/\1/p' | head -1)"
+          printf '%s\t%s\n' "${path}" "${question:-(no question recorded)}"
+        done
+
 _workflow-hooks-state:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -1796,6 +1828,24 @@ land branch='':
     if [ -n "$(git status --porcelain)" ]; then
         echo "REFUSING: the working tree is not clean." >&2
         git status --short >&2
+        exit 1
+    fi
+
+    # AN OPEN A18 DECISION NEVER LANDS (#76). A required human decision that nobody
+    # has taken is not a detail to fix after the merge: the reconciliation it belongs
+    # to is stopped, by design, until it is answered and signed.
+    open="$(just --justfile "{{justfile()}}" _workflow-open-decisions "${branch}")"
+    if [ -n "${open}" ]; then
+        n="$(printf '%s\n' "${open}" | wc -l | tr -d ' ')"
+        echo "" >&2
+        echo "REFUSING: ${branch} carries ${n} open decision(s) - a required human" >&2
+        echo "  decision has not been taken:" >&2
+        printf '%s\n' "${open}" | while IFS="$(printf '\t')" read -r path question; do
+            echo "    ${path}" >&2
+            echo "      ${question}" >&2
+        done
+        echo "" >&2
+        echo "  Decide it first (the decision renames the OPEN file, signed), then land." >&2
         exit 1
     fi
 
