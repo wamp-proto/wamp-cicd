@@ -91,6 +91,7 @@ test:
     bash tests/test-ai-dir.sh
     bash tests/test-where-output.sh
     bash tests/test-open-decisions.sh
+    bash tests/test-aspects.sh
     bash tests/test-pr-lookup.sh
     bash tests/test-signing-scope.sh
     bash tests/test-variable-override.sh

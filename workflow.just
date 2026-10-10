@@ -475,6 +475,7 @@ where:
             echo "                 ${question}"
         done
     fi
+    echo "  aspects      $(just --justfile "{{justfile()}}" _workflow-aspects-summary)"
     echo "  signing      ${signing}"
     [ -n "${signing_note}" ] && echo "               ${signing_note}"
     if [ -n "${scope_offenders}" ]; then
@@ -856,6 +857,52 @@ _workflow-forge-repo:
 # remote is preferred over a fork, so the count is of the project's issues and
 # not of a fork's.
 #
+# Resolved per aspect: which repository provides it, where it is pinned, at which commit, and
+# whether it is implemented there.
+#
+# List the aspects this repository declares in aspects.toml (#78).
+list-aspect venv='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    py="$(just --justfile "{{justfile()}}" _workflow-python "{{venv}}")"
+    "${py}" "{{source_directory()}}/scripts/aspects.py" list
+
+# One recipe for every aspect: each implemented aspect ships `scripts/check.py`, and this runs it
+# from the provider at the commit the repository pins (submodule gitlink, or deps.toml for a
+# provider under .deps/) - never from a newer revision; whether the pin is behind is the rollout
+# tooling's question. Fails when a check fails, AND when a provider is not checked out or not at
+# its pin: a check that silently does not run would read as a pass. An aspect declared but not
+# implemented yet is reported, not failed. `venv` picks the interpreter (default: python3, 3.11+).
+#
+# Run the declared aspects' checks - one aspect, or all - from this repository's own pins (#78).
+check-aspect venv='' aspect='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    py="$(just --justfile "{{justfile()}}" _workflow-python "{{venv}}")"
+    "${py}" "{{source_directory()}}/scripts/aspects.py" check "{{aspect}}"
+
+# The interpreter for the aspect recipes: python3, or `.venvs/<venv>/bin/python` of this
+# repository. Python 3.11+ (tomllib) - the checks use the standard library only.
+_workflow-python venv='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -z "{{venv}}" ]; then py="python3"
+    else
+        py="$(git rev-parse --show-toplevel)/.venvs/{{venv}}/bin/python"
+        [ -x "${py}" ] || { echo "ERROR: no venv '{{venv}}' here (${py})" >&2; exit 1; }
+    fi
+    "${py}" -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
+        || { echo "ERROR: ${py} is older than Python 3.11 (the aspect checks need tomllib)" >&2; exit 1; }
+    echo "${py}"
+
+# One line for `where`: how many aspects, and whether any check fails or cannot run.
+_workflow-aspects-summary:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    py="$(just --justfile "{{justfile()}}" _workflow-python 2>/dev/null)" \
+        || { echo "unknown - no Python 3.11+ as python3 (try: just check-aspect <venv>)"; exit 0; }
+    "${py}" "{{source_directory()}}/scripts/aspects.py" summary 2>&1 || echo "unknown - the summary failed"
+
 # Group this repository's open issues by milestone - what is left, and for when.
 what:
     #!/usr/bin/env bash
