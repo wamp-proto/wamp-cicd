@@ -355,8 +355,6 @@ _workflow-signing-scope:
 # -- where am I
 # -----------------------------------------------------------------------------
 
-# Answer "which branch am I on, and has this work landed?" (read-only).
-#
 # The question this answers is invisible, and being unable to see it was behind
 # three separate failures in one day: a branch cut from the wrong parent, a
 # stale local main that made a pin resolve to the wrong revision, and a branch
@@ -368,6 +366,8 @@ _workflow-signing-scope:
 # commits to the integration branch; printing them means an unexpected one - a
 # commit inherited from another branch because this one was cut from the wrong
 # parent - is visible immediately rather than after it has been merged.
+#
+# Answer "which branch am I on, and has this work landed?" (read-only).
 where:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -772,13 +772,13 @@ _workflow-submodule-state:
             | sed 's/, $//')"
     echo "ok|${count} at their pinned revision (${pins})"
 
-# Check every submodule against its upstream HEAD. NEEDS THE NETWORK.
-#
 # Deliberately not part of `where`, which must stay offline and instant.
 # `aaiare-metal-typedefint#5` asked for this as a one-time campaign; a one-time
 # campaign is true on the day it is run, and this estate has already had a stale
 # pin silently disable hook enforcement once. So it is a recipe rather than an
 # errand.
+#
+# Check every submodule against its upstream HEAD. NEEDS THE NETWORK.
 submodules-at-head:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -961,8 +961,6 @@ what:
     done
     echo ""
 
-# Commit directly on the integration branch, WITHOUT disabling any hook (#61).
-#
 # WHY THIS EXISTS
 #
 # `.ai/.githooks/commit-msg` refuses commits on the integration branch, and its
@@ -1001,6 +999,8 @@ what:
 #
 # AI assistants MUST NOT use this recipe, in the same sense that they must not
 # create tags: stated as policy, not enforced by code.
+#
+# Commit directly on the integration branch, WITHOUT disabling any hook (#61).
 commit-on-main reason message:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -1083,8 +1083,6 @@ commit-on-main reason message:
 # -- start a branch
 # -----------------------------------------------------------------------------
 
-# Start a dev branch for an issue (usage: `just new-branch 14`).
-#
 # Replaces nine commands and a hand-edited file. Every guard below is earned by
 # a specific failure, none is speculative:
 #
@@ -1104,6 +1102,8 @@ commit-on-main reason message:
 # being written here: one home per artifact. If `.ai` is absent the branch is
 # still created and the omission is stated - most repositories that will
 # eventually use this file do not carry that submodule.
+#
+# Start a dev branch for an issue (usage: `just new-branch 14`).
 new-branch issue:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1401,8 +1401,6 @@ _workflow-commit branch_hint message:
 # -- publish a branch
 # -----------------------------------------------------------------------------
 
-# Bring this dev branch up to date across every remote, then publish it.
-#
 # THE RECIPE THAT SHOULD HAVE EXISTED ALL WEEK (#18).
 #
 # Four of the five "my local branch was behind" incidents happened in the gap
@@ -1422,6 +1420,8 @@ _workflow-commit branch_hint message:
 #
 # Never force-pushes and never rebases on its own: a diverged branch is a
 # decision, not a mechanical fix.
+#
+# Bring this dev branch up to date across every remote, then publish it.
 publish branch='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1816,8 +1816,6 @@ _workflow-merge-signed branch base_remote pr_note:
     echo "--> Pushing {{WORKFLOW_MAIN}} to ${base_remote} (the authority)"
     git push "${base_remote}" {{WORKFLOW_MAIN}}
 
-# Delete the current dev branch, but only once it has actually landed.
-#
 # THE GUARD THAT MATTERS: `git branch -d` accepts "merged into its own upstream
 # tracking branch" as sufficient, and a pushed branch satisfies that trivially -
 # `origin/fix_6` obviously contains `fix_6`. So `-d` deleted a branch that had
@@ -1845,6 +1843,8 @@ _workflow-merge-signed branch base_remote pr_note:
 # branch still to clean up - and requiring a checkout back onto a branch purely
 # in order to delete it is silly. Found by using the recipe (#12 is why the
 # merge is local in the first place).
+#
+# Land a dev branch: the maintainer's signed merge into the integration branch, push, then delete the branch everywhere.
 land branch='':
     #!/usr/bin/env bash
     set -euo pipefail

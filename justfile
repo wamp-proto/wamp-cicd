@@ -73,8 +73,7 @@ check-community-files:
 deps *args:
     bash scripts/deps.sh sync {{args}}
 
-# Run the unit tests: composite-action shell logic, and the workflow recipes
-# themselves, both against crafted fixtures rather than against this checkout.
+# Run the unit tests: composite-action shell logic, and the workflow recipes themselves, both against crafted fixtures rather than against this checkout.
 test:
     #!/usr/bin/env bash
     # pipefail: the sandboxes are piped through `tail -1`, which must not hide their failure.
@@ -92,6 +91,7 @@ test:
     bash tests/test-where-output.sh
     bash tests/test-open-decisions.sh
     bash tests/test-aspects.sh
+    bash tests/test-recipe-docs.sh
     bash tests/test-pr-lookup.sh
     bash tests/test-signing-scope.sh
     bash tests/test-variable-override.sh
