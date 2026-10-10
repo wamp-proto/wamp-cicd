@@ -22,6 +22,10 @@ repositories cannot check themselves against.
 
 [`workflow.just`](workflow.just) implements the first two — `just where`,
 `just new-branch`, `just publish`, `just land`. It implements; they decide.
+It also runs the checks of the aspects a repository declares in `aspects.toml`:
+`just list-aspect` lists them, `just check-aspect [venv] [aspect]` runs each
+aspect's `scripts/check.py` from the repository's own pin of its provider
+([`scripts/aspects.py`](scripts/aspects.py)).
 [`fleet/`](fleet/README.md) applies them to many repositories at once: one
 change as a batched rollout, and consistent branch protection and organisation
 settings (`just fleet-where`, `just fleet-rollout <phase> [go]`, ...).
