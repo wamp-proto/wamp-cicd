@@ -464,6 +464,10 @@ where:
         else echo "  audit file   MISSING for this branch - expected $(just --justfile "{{justfile()}}" _workflow-audit-path "${branch}")"; fi
     fi
     echo "  submodules   ${subs_state#*|}"
+    leftovers="$(just --justfile "{{justfile()}}" _workflow-leftovers)"
+    if [ -n "${leftovers}" ]; then
+        echo "  leftover     ${leftovers} - untracked, from a former submodule layout: look, then remove"
+    fi
     open_decisions="$(just --justfile "{{justfile()}}" _workflow-open-decisions HEAD)"
     if [ -z "${open_decisions}" ]; then
         echo "  decisions    none open"
@@ -712,17 +716,40 @@ _workflow-hooks-state:
 # See TOOLING-STRUCTURE.md. `.deps/wamp-ai` is answered from deps.toml as well
 # as from the checkout, so that "pinned but not checked out" is reported as
 # hooks missing rather than as "this repository has none".
+#
+# Decided from what the repository TRACKS, not from what exists on disk (#83): a repository that
+# left the submodule layout keeps the old checkout as an untracked `.ai/` in every existing clone,
+# and going by the directory took that leftover over the deps.toml pin - a false NOT ENFORCED for
+# correctly configured hooks, and ENFORCED for a core.hooksPath still on the old hooks. So `.ai`
+# only when it is a submodule: a gitlink in the index (checked out or not), or in .gitmodules.
 _workflow-ai-dir:
     #!/usr/bin/env bash
     set -uo pipefail
     root="$(git rev-parse --show-toplevel)"
-    if [ -d "${root}/.ai/.githooks" ]; then
+    if [ "$(git -C "${root}" ls-files --stage -- .ai 2>/dev/null | cut -c1-6)" = 160000 ] \
+        || git -C "${root}" config -f .gitmodules --get submodule..ai.url >/dev/null 2>&1; then
         echo ".ai"
     elif [ -d "${root}/.deps/wamp-ai/.githooks" ] || grep -q '^\[wamp-ai\]' "${root}/deps.toml" 2>/dev/null; then
         echo ".deps/wamp-ai"
     elif [ -f "${root}/.githooks/commit-msg" ] && [ -f "${root}/AI_POLICY.md" ] && [ ! -L "${root}/AI_POLICY.md" ]; then
         echo "."
     fi
+
+# Former submodule directories this repository no longer tracks (internal), e.g. ".ai/ .cicd/".
+#
+# Git leaves a populated submodule checkout behind when the gitlink is removed, so every existing
+# clone of a repository that moved to deps.toml keeps one (#83). Named, never removed here: it is
+# the operator's tree, and only a look tells a leftover from work kept there on purpose.
+_workflow-leftovers:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    root="$(git rev-parse --show-toplevel)"
+    found=""
+    for d in .ai .cicd; do
+        [ -e "${root}/${d}" ] || continue
+        [ -z "$(git -C "${root}" ls-files -- "${d}" 2>/dev/null)" ] && found="${found} ${d}/"
+    done
+    echo "${found# }"
 
 # The command that switches the hooks on in this clone (internal).
 _workflow-hooks-fix:

@@ -103,5 +103,21 @@ has "a drifted submodule is reported as NOT at the pin" \
     "^  submodules   1 of 2 NOT at the pinned revision: \.cicd"
 
 echo ""
+echo "== a leftover from a former submodule layout is named (#83) =="
+
+R="${WORK}/left"; mkdir -p "$R"
+q git init -b main "$R"
+( cd "$R"
+  cp "$WORKFLOW_JUST" workflow.just
+  printf "import 'workflow.just'\n" > justfile
+  q git add -A && q git commit -m seed
+  mkdir -p .ai/.githooks .cicd && echo old > .ai/.githooks/commit-msg && echo old > .cicd/f )
+( cd "$R" && just where ) > "${WORK}/log" 2>&1
+has "the leftover row names both, and what to do" \
+    "^  leftover     \.ai/ \.cicd/ - untracked, from a former submodule layout: look, then remove$"
+( cd "${WORK}/plain" && just where ) > "${WORK}/log" 2>&1
+if grep -q "^  leftover" "${WORK}/log"; then bad "no leftover, no row" "a leftover row in a clean repository"; else ok "no leftover, no row"; fi
+
+echo ""
 echo "TOTAL: pass=${PASS} fail=${FAIL}"
 [ "$FAIL" = 0 ]
