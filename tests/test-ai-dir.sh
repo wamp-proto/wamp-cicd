@@ -111,6 +111,22 @@ q git -C "$W" config core.hooksPath .githooks
 L="${WORK}/link"; repo "$L"; hook_into "$L" "$NEW_HOOK"; ln -s .ai/AI_POLICY.md "$L/AI_POLICY.md"
 [ -z "$(ai_dir "$L")" ] && [ -z "$(wf "$L" _workflow-ai-dir)" ] && ok "a symlinked AI_POLICY.md does not make a repository 'wamp-ai itself'" || bad "symlink"
 
+echo "== a leftover .ai/ in a deps.toml repository: tracked state decides (#83)"
+# Moving to deps.toml leaves the old submodule checkout behind as an untracked .ai/ in every
+# existing clone - with a commit-msg in it. Going by the directory, that won over deps.toml.
+X="${WORK}/left"; repo "$X"; deps_toml "$X" "$AI_NEW"; q git -C "$X" add -A; q git -C "$X" commit -m seed
+q bash "${HERE}/../scripts/deps.sh" sync --root "$X"
+hook_into "$X/.ai" "$OLD_HOOK"; mkdir -p "$X/.cicd"; echo old > "$X/.cicd/f"
+[ "$(wf "$X" _workflow-ai-dir)" = .deps/wamp-ai ] && [ "$(ai_dir "$X")" = .deps/wamp-ai ] && ok "the leftover does not win: .deps/wamp-ai, by both" || bad "left: dir" "$(wf "$X" _workflow-ai-dir) / $(ai_dir "$X")"
+q git -C "$X" config core.hooksPath .deps/wamp-ai/.githooks
+[ "$(wf "$X" _workflow-hooks-state)" = "ok|ENFORCED (.deps/wamp-ai/.githooks)" ] && ok "correct hooks path: ENFORCED (was a false NOT ENFORCED)" || bad "left: correct" "$(wf "$X" _workflow-hooks-state)"
+q git -C "$X" config core.hooksPath .ai/.githooks
+[ "$(wf "$X" _workflow-hooks-state)" = "bad|NOT ENFORCED - core.hooksPath is .ai/.githooks" ] && ok "hooks path into the leftover: NOT ENFORCED (was a false ENFORCED)" || bad "left: stale" "$(wf "$X" _workflow-hooks-state)"
+[ "$(wf "$X" _workflow-leftovers)" = ".ai/ .cicd/" ] && ok "both leftovers are named" || bad "left: names" "$(wf "$X" _workflow-leftovers)"
+[ -z "$(wf "$S" _workflow-leftovers)" ] && ok "a tracked .ai submodule is not a leftover" || bad "left: tracked"
+# A submodule that is not checked out is still a submodule: the gitlink is in the index.
+U="${WORK}/uninit"; git clone -q "$S" "$U" 2>/dev/null
+[ ! -e "$U/.ai/.githooks" ] && [ "$(wf "$U" _workflow-ai-dir)" = .ai ] && [ "$(ai_dir "$U")" = .ai ] && ok "an uninitialised .ai submodule: still .ai, by both" || bad "uninit: dir" "$(wf "$U" _workflow-ai-dir)"
 echo "== can the integration branch take a maintainer's merge? (fleet/lib/aidir.sh)"
 ai_admits_merge "$N" main; [ $? != 0 ] && ok "no hooks to be found: no (as before)" || bad "admits: none"
 q git -C "$S/.ai" checkout "$AI_OLD"; q git -C "$S" -c core.hooksPath=/dev/null commit -am "old hook pinned"   # (the fixture itself must get past the hook)

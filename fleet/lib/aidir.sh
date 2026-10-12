@@ -10,7 +10,10 @@
 # checked out, so "recorded but not there" is not mistaken for "has none".
 ai_dir() {
     local d="$1"
-    if [ -d "${d}/.ai/.githooks" ] || git -C "${d}" config -f .gitmodules --get submodule..ai.url >/dev/null 2>&1; then echo ".ai"
+    # .ai only when it is a submodule (gitlink in the index, or in .gitmodules) - an untracked
+    # leftover .ai/ from a former submodule layout must not win over deps.toml (#83)
+    if [ "$(git -C "${d}" ls-files --stage -- .ai 2>/dev/null | cut -c1-6)" = 160000 ] \
+        || git -C "${d}" config -f .gitmodules --get submodule..ai.url >/dev/null 2>&1; then echo ".ai"
     elif [ -d "${d}/.deps/wamp-ai/.githooks" ] || grep -q '^\[wamp-ai\]' "${d}/deps.toml" 2>/dev/null; then echo ".deps/wamp-ai"
     elif [ -f "${d}/.githooks/commit-msg" ] && [ -f "${d}/AI_POLICY.md" ] && [ ! -L "${d}/AI_POLICY.md" ]; then echo "."
     fi
