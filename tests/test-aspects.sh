@@ -132,6 +132,61 @@ rc_is "not checked out: exit non-zero" 1
 has "not checked out: says how to fix it" "^dep: CANNOT CHECK - \.deps/prov is not checked out - run: just deps$"
 
 echo ""
+echo "== ASPECTS_UNFETCHED=warn: a provider CI could not fetch (#88) =="
+# .deps/ was removed above: `dep`'s provider is not checked out.
+( cd "$R" && ASPECTS_UNFETCHED=warn just check-aspect '' dep ) > "${WORK}/log" 2>&1; RC=$?
+rc_is "unfetched, with the switch: exit 0" 0
+has "unfetched, with the switch: the generic line" "^dep: not checked here - its provider could not be fetched$"
+hasnt "unfetched, with the switch: no provider repository named" "acme"
+hasnt "unfetched, with the switch: no provider path named" "\.deps/prov|prov\b"
+( cd "$R" && ASPECTS_UNFETCHED=warn just check-aspect ) > "${WORK}/log" 2>&1; RC=$?
+rc_is "with the switch, another aspect failing still fails the run" 1
+has "with the switch, all: the unfetched one reported" "^dep: not checked here"
+has "with the switch, all: the failing one reported" "^fail: FAIL \(@ ${PIN:0:7}\)$"
+has "with the switch, all: ok names the pin, not the repository" "^pass: ok \(@ ${PIN:0:7}\)$"
+hasnt "with the switch, all: no provider repository named anywhere" "acme/provider"
+# What a `deps.sh sync` that could not fetch leaves behind: .deps/<name> initialized, no commit.
+( cd "$R" && mkdir -p .deps/prov && git -C .deps/prov init -q && git -C .deps/prov remote add origin "https://example.invalid/x.git" )
+( cd "$R" && ASPECTS_UNFETCHED=warn just check-aspect '' dep ) > "${WORK}/log" 2>&1; RC=$?
+rc_is "an empty .deps checkout (a failed sync), with the switch: exit 0" 0
+has "an empty .deps checkout, with the switch: the generic line" "^dep: not checked here - its provider could not be fetched$"
+( cd "$R" && just check-aspect '' dep ) > "${WORK}/log" 2>&1; RC=$?
+rc_is "an empty .deps checkout, without the switch: exit non-zero" 1
+has "an empty .deps checkout, without the switch: not checked out, with the hint" "^dep: CANNOT CHECK - \.deps/prov is not checked out - run: just deps$"
+( cd "$R" && rm -rf .deps )
+( cd "$R" && ASPECTS_UNFETCHED=yes just check-aspect ) > "${WORK}/log" 2>&1; RC=$?
+rc_is "an unknown value: exit 2" 2; has "an unknown value: said so" "the only value is 'warn'"
+
+( cd "$R" && git -C .prov checkout -q main )   # .prov past its pin
+( cd "$R" && ASPECTS_UNFETCHED=warn just check-aspect '' pass ) > "${WORK}/log" 2>&1; RC=$?
+rc_is "with the switch, a provider at the wrong commit still fails" 1
+has "with the switch, wrong commit: CANNOT CHECK, generic" "^pass: CANNOT CHECK - its provider is checked out at another commit than its pin$"
+hasnt "with the switch, wrong commit: no path named" "\.prov"
+( cd "$R" && git -C .prov checkout -q "$PIN" )
+
+( cd "$R" && printf '\n[provider.loose]\nrepo = "acme/loose"\npath = ".loose"\n' >> aspects.toml \
+  && sed -i 's/"ghost"\]/"ghost", "loose"]/' aspects.toml )
+( cd "$R" && ASPECTS_UNFETCHED=warn just check-aspect '' loose ) > "${WORK}/log" 2>&1; RC=$?
+rc_is "with the switch, a path neither submodule nor deps entry still fails" 1
+has "with the switch, neither: CANNOT CHECK, generic" "^loose: CANNOT CHECK - its provider path is neither a submodule nor a deps.toml entry$"
+hasnt "with the switch, neither: no repository or path named" "acme|\.loose"
+( cd "$R" && git checkout -q aspects.toml )
+
+echo ""
+echo "== the reusable workflow (#88) =="
+WF="${HERE}/../.github/workflows/check-aspect.yml"
+if grep -qE '^\s+workflow_call:' "$WF"; then ok "workflow: on workflow_call"; else bad "workflow: on workflow_call" "no workflow_call trigger"; fi
+grep -E '^\s+(- )?uses:' "$WF" | grep -vE 'uses: [^@ ]+@[0-9a-f]{40}( |$)' > "${WORK}/log"
+if [ -s "${WORK}/log" ]; then bad "workflow: every action pinned to a commit SHA" "unpinned"; else ok "workflow: every action pinned to a commit SHA"; fi
+# Positive allowlist: what the workflow may name. A denylist would itself spell out the names
+# a public file must not contain.
+grep -oE 'uses: [^@ ]+|https://[^ "/]+/[^ "/]+/[^ "/]+' "$WF" | sed -E 's#^uses: ##; s#^https://##' \
+    | grep -vxE 'actions/checkout|wamp-proto/wamp-cicd/\.github/workflows/check-aspect\.yml|github\.com/wamp-proto/wamp-cicd:?|github\.com/casey/just' > "${WORK}/log"
+if [ -s "${WORK}/log" ]; then bad "workflow: names only the allowed public repositories" "unexpected"; else ok "workflow: names only the allowed public repositories"; fi
+if grep -qE '^\s+ASPECTS_UNFETCHED: warn$' "$WF"; then ok "workflow: runs with the switch"; else bad "workflow: runs with the switch" "no ASPECTS_UNFETCHED: warn"; fi
+if grep -qE '^\s+persist-credentials: false$' "$WF" && grep -qE '^\s+contents: read$' "$WF"; then ok "workflow: read-only, no persisted credentials"; else bad "workflow: read-only, no persisted credentials" "missing"; fi
+
+echo ""
 echo "== no aspects.toml =="
 E="${WORK}/empty"; mkdir -p "$E"; q git init -b main "$E"
 ( cd "$E"; cp "$WORKFLOW_JUST" workflow.just; mkdir -p scripts; cp "$ASPECTS_PY" scripts/; printf "import 'workflow.just'\n" > justfile; q git add -A; q git commit -m seed )

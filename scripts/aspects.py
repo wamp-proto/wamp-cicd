@@ -29,10 +29,25 @@ States:
     not implemented       declared, but the provider has no such aspect at the pin (or no provider
                           is declared) - reported, not failed: a not-yet-built aspect is normal
     CANNOT CHECK          the provider is not checked out, or not at the pin - failed
+
+ASPECTS_UNFETCHED=warn (#88) - set by the reusable CI workflow, never implied. In CI a provider that
+is not checked out may simply not be fetchable from there (a private provider, and no credential).
+With the variable set, and only then, such an aspect is reported with one generic line and does not
+fail the run:
+
+    <aspect>: not checked here - its provider could not be fetched
+
+The other two CANNOT CHECK cases (checked out at another commit than its pin; a path that is neither
+a submodule nor a deps.toml entry) still fail: those are defects of the repository, not reachability.
+Under the variable no line names a provider repository or path - the run log of a private
+repository is private, but the rule is kept simple and testable: aspect names only, as the
+repository's own aspects.toml spells them. `ASPECTS_UNFETCHED=warn just check-aspect` reproduces
+the CI behaviour on any machine.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -41,6 +56,8 @@ from pathlib import Path
 
 CANNOT = "CANNOT CHECK"
 NOT_IMPLEMENTED = "not implemented"
+UNFETCHED_ENV = "ASPECTS_UNFETCHED"
+UNFETCHED_LINE = "not checked here - its provider could not be fetched"
 
 
 @dataclass
@@ -51,6 +68,8 @@ class Aspect:
     pin: str  # pinned commit (short), or "-"
     state: str  # NOT_IMPLEMENTED, CANNOT, or "implemented"
     why: str = ""
+    why_generic: str = ""  # the same, naming no provider repository or path (ASPECTS_UNFETCHED=warn)
+    unfetched: bool = False  # CANNOT because the provider is not checked out at all
 
     @property
     def check_py(self) -> Path:
@@ -103,11 +122,16 @@ def resolve(root: Path) -> list[Aspect] | None:
         checkout = root / path
         if not pin:
             a.state, a.why = CANNOT, f"{path} is neither a submodule nor a deps.toml entry"
-        elif not checkout.is_dir() or not any(checkout.iterdir()):
+            a.why_generic = "its provider path is neither a submodule nor a deps.toml entry"
+        elif not checkout.is_dir() or not any(checkout.iterdir()) or not _git(checkout, "rev-parse", "HEAD"):
+            # A checkout with no commit is not checked out either: a `deps.sh sync` that could
+            # not fetch leaves `.deps/<name>` initialized and empty (measured, #88).
             hint = "just deps" if path.startswith(".deps/") else f"git submodule update --init {path}"
             a.state, a.why = CANNOT, f"{path} is not checked out - run: {hint}"
+            a.unfetched = True
         elif (head := _git(checkout, "rev-parse", "HEAD")) != pin:
             a.state, a.why = CANNOT, f"{path} is checked out at {head[:7] or '?'}, its pin is {pin[:7]}"
+            a.why_generic = "its provider is checked out at another commit than its pin"
         elif not (root / a.check_py).is_file():
             a.state, a.why = NOT_IMPLEMENTED, f"{repo} has no aspects/{name}/ at {pin[:7]}"
         out.append(a)
@@ -139,8 +163,14 @@ def _run(root: Path, a: Aspect) -> tuple[int, str]:
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-def cmd_check(root: Path, only: str | None, *, quiet: bool = False) -> tuple[int, list[str]]:
-    """Run the checks; returns (exit status, one verdict line per aspect)."""
+def cmd_check(
+    root: Path, only: str | None, *, quiet: bool = False, unfetched_warn: bool = False
+) -> tuple[int, list[str]]:
+    """Run the checks; returns (exit status, one verdict line per aspect).
+
+    ``unfetched_warn`` is ASPECTS_UNFETCHED=warn: a provider that is not checked out is one
+    generic line and no failure, and no line names a provider repository or path.
+    """
     aspects = resolve(root)
     if aspects is None:
         return 0, []
@@ -151,13 +181,17 @@ def cmd_check(root: Path, only: str | None, *, quiet: bool = False) -> tuple[int
     status, verdicts = 0, []
     for a in aspects:
         if a.state == NOT_IMPLEMENTED:
-            verdicts.append(f"{a.name}: {NOT_IMPLEMENTED} ({a.why})")
+            why = "its provider has no such aspect at its pin" if unfetched_warn and a.path else a.why
+            verdicts.append(f"{a.name}: {NOT_IMPLEMENTED} ({why})")
+        elif a.state == CANNOT and a.unfetched and unfetched_warn:
+            verdicts.append(f"{a.name}: {UNFETCHED_LINE}")
         elif a.state == CANNOT:
             status = 1
-            verdicts.append(f"{a.name}: {CANNOT} - {a.why}")
+            verdicts.append(f"{a.name}: {CANNOT} - {a.why_generic if unfetched_warn else a.why}")
         else:
             rc, output = _run(root, a)
-            verdicts.append(f"{a.name}: {'ok' if rc == 0 else 'FAIL'} ({a.repo} @ {a.pin})")
+            where = f"@ {a.pin}" if unfetched_warn else f"{a.repo} @ {a.pin}"
+            verdicts.append(f"{a.name}: {'ok' if rc == 0 else 'FAIL'} ({where})")
             if rc != 0:
                 status = 1
             if not quiet and output:
@@ -187,7 +221,13 @@ def main(argv: list[str]) -> int:
         hint = f" - failing: {', '.join(bad)}; run: just check-aspect" if bad else ""
         print(f"{len(aspects)} declared: {', '.join(parts)}{hint}")
         return 0
-    status, verdicts = cmd_check(root, argv[1] if len(argv) > 1 and argv[1] else None)
+    mode = os.environ.get(UNFETCHED_ENV, "")
+    if mode not in ("", "warn"):
+        print(f"ERROR: {UNFETCHED_ENV}={mode!r} - the only value is 'warn' (or leave it unset)", file=sys.stderr)
+        return 2
+    status, verdicts = cmd_check(
+        root, argv[1] if len(argv) > 1 and argv[1] else None, unfetched_warn=mode == "warn"
+    )
     print("\n".join(verdicts) or "no aspects.toml - this repository declares no aspects")
     return status
 

@@ -25,7 +25,11 @@ repositories cannot check themselves against.
 It also runs the checks of the aspects a repository declares in `aspects.toml`:
 `just list-aspect` lists them, `just check-aspect [venv] [aspect]` runs each
 aspect's `scripts/check.py` from the repository's own pin of its provider
-([`scripts/aspects.py`](scripts/aspects.py)).
+([`scripts/aspects.py`](scripts/aspects.py)). In CI the same check runs through
+the reusable workflow [`check-aspect.yml`](.github/workflows/check-aspect.yml),
+which a repository calls pinned to the wamp-cicd commit it already pins; there,
+`ASPECTS_UNFETCHED=warn` reports a provider the CI cannot fetch as `not checked
+here` instead of failing, and no line names that provider.
 [`fleet/`](fleet/README.md) applies them to many repositories at once: one
 change as a batched rollout, and consistent branch protection and organisation
 settings (`just fleet-where`, `just fleet-rollout <phase> [go]`, ...).
