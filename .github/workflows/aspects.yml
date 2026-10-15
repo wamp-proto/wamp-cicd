@@ -1,0 +1,21 @@
+# Copyright (c) typedef int GmbH, Germany, 2025. All rights reserved.
+# Licensed under MIT.
+#
+# This repository's declared aspects' checks in CI (#88). wamp-cicd pins no wamp-cicd, so it
+# calls the reusable workflow from its own tree - which also exercises that workflow on every
+# pull request here. Every other repository calls it pinned to the wamp-cicd commit it pins
+# (way-a rule 2).
+
+name: aspects
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  aspects:
+    uses: ./.github/workflows/check-aspect.yml
