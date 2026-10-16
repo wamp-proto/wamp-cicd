@@ -1956,16 +1956,52 @@ _workflow-merge-signed branch base_remote pr_note:
     # 3 --------------------------------------------------------------------
     # BEFORE IT LEAVES THIS MACHINE. A merge that was made but not signed must
     # not reach the protected branch, and the check costs one command.
+    #
+    # REKOR MAY NOT HAVE INDEXED THE ENTRY YET (#86). gitsign's online mode looks the
+    # signature up in the transparency log, and within a second of signing that lookup can
+    # fail although the entry exists: three lands in a row were undone on 2026-10-14, and
+    # the undone merge (still in the reflog) verified minutes later with the same tlog
+    # index. Each retry by hand meant a new merge and another browser OIDC flow. So exactly
+    # that failure is retried, with a backoff; every other failure - wrong identity, wrong
+    # issuer, no signature, a bad certificate - still refuses at once. The delays are
+    # WORKFLOW_REKOR_RETRY_DELAYS (seconds, space-separated; the tests set them to 0).
     echo "--> Verifying the merge signature"
-    if ! gitsign verify \
-            --certificate-identity="${identity}" \
-            --certificate-oidc-issuer="${issuer}" HEAD; then
+    merge_sha="$(git rev-parse HEAD)"
+    read -r -a delays <<< "${WORKFLOW_REKOR_RETRY_DELAYS:-5 10 15 20}"
+    attempts=$(( ${#delays[@]} + 1 ))
+    attempt=1
+    while :; do
+        if out="$(gitsign verify \
+                --certificate-identity="${identity}" \
+                --certificate-oidc-issuer="${issuer}" HEAD 2>&1)"; then
+            printf '%s\n' "${out}"
+            break
+        fi
+        printf '%s\n' "${out}"
+        not_indexed=0
+        [[ "${out}" == *"could not find matching tlog entry"* ]] && not_indexed=1
+        if [ "${not_indexed}" = 1 ] && [ "${attempt}" -lt "${attempts}" ]; then
+            delay="${delays[$((attempt - 1))]}"
+            attempt=$((attempt + 1))
+            echo "--> Rekor has not indexed the entry yet; retrying in ${delay} s (attempt ${attempt}/${attempts})"
+            sleep "${delay}"
+            continue
+        fi
         git reset --hard "${before_merge}"
         echo "" >&2
         echo "REFUSING: the merge commit does not verify as ${identity}" >&2
         echo "  via ${issuer}. The merge has been undone; nothing was pushed." >&2
+        if [ "${not_indexed}" = 1 ]; then
+            echo "" >&2
+            echo "  Rekor had still not indexed the entry after ${attempts} attempts. The merge" >&2
+            echo "  commit ${merge_sha} is still in the reflog; to verify it later:" >&2
+            echo "" >&2
+            echo "    gitsign verify --certificate-identity=${identity} --certificate-oidc-issuer=${issuer} ${merge_sha}" >&2
+            echo "" >&2
+            echo "  If it verifies, run \`just land\` again: it makes and signs a new merge." >&2
+        fi
         exit 1
-    fi
+    done
 
     # 4 --------------------------------------------------------------------
     # The authority first, deliberately. Everything else in this file treats

@@ -88,6 +88,7 @@ test:
     bash tests/test-audit-file.sh
     bash tests/test-workflow-signing.sh
     bash tests/test-land-tooling-pins.sh
+    bash tests/test-land-rekor-retry.sh
     bash tests/test-ai-dir.sh
     bash tests/test-where-output.sh
     bash tests/test-open-decisions.sh
