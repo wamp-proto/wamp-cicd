@@ -140,6 +140,11 @@ merge commit
 **Verify before pushing, not after.** A merge that was made but not signed must
 not reach the protected branch; the check costs one command, and if it fails the
 merge is undone rather than pushed.
+One failure is retried, and only that one: the transparency log not having
+indexed the new entry yet ("could not find matching tlog entry"), which happens
+within a second of signing although the entry exists. `just land` waits and asks
+again, about 50 seconds in all, before it undoes the merge; any other failure -
+wrong identity, wrong issuer, no signature - refuses at once (wamp-cicd#86).
 
 **`-S` explicitly, not `commit.gpgsign`.** Whether an object this policy is
 about gets signed must not depend on a config key that is easy to unset and
