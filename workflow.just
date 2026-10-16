@@ -1283,6 +1283,35 @@ new-branch issue:
         exit 1
     fi
 
+    # THE ISSUE, FETCHED NOW - BEFORE ANYTHING IS CREATED (#91). It is frozen into the branch
+    # below, next to the audit file, so the maintainer's signed first commit signs the
+    # specification as it stood when the work began, and a reader of the branch alone has it.
+    # The same two distinctions as the rest of this recipe: gh present but the fetch failing
+    # is "could not ask" and refuses (#24) - nothing exists yet; no gh at all, or no GitHub
+    # remote, is a loud note and the branch is cut anyway, as an unsigned commit is (#36),
+    # because this file ships to contributors who have no gh.
+    issue_text=""
+    freeze_skip=""
+    issue_slug="$(just --justfile "{{justfile()}}" _workflow-forge-repo)"
+    if [ -z "${issue_slug}" ]; then
+        freeze_skip="no GitHub remote in this checkout"
+    elif ! command -v gh >/dev/null 2>&1; then
+        freeze_skip="gh is not installed here"
+    else
+        issue_text="$(mktemp)"
+        trap 'rm -f "${issue_text}"' EXIT
+        if ! just --justfile "{{justfile()}}" _workflow-issue-text "${issue_slug}" "{{issue}}" \
+                > "${issue_text}" 2>&1; then
+            echo "REFUSING: could not fetch issue ${issue_slug}#{{issue}} to freeze it into ${branch}." >&2
+            echo "" >&2
+            sed 's/^/    /' "${issue_text}" >&2
+            echo "" >&2
+            echo "  Nothing has been created. The branch carries the issue it is cut for;" >&2
+            echo "  an issue that could not be fetched is not an issue that has no text." >&2
+            exit 1
+        fi
+    fi
+
     git checkout {{WORKFLOW_MAIN}}
     git merge --ff-only "${base_remote}/{{WORKFLOW_MAIN}}"
 
@@ -1332,14 +1361,35 @@ new-branch issue:
         echo "--> Audit file ${audit} (issue #{{issue}})"
     fi
 
+    # THE FROZEN ISSUE, beside the audit file and in the same commit (#91).
+    if [ -n "${issue_text}" ]; then
+        frozen="$(just --justfile "{{justfile()}}" _workflow-audit-path "${branch}")"
+        [ -n "${audit:-}" ] && frozen="${audit}"
+        frozen="${frozen%.md}.issue.md"
+        mkdir -p "$(dirname "${frozen}")"
+        sha="$(just --justfile "{{justfile()}}" _workflow-issue-sha < "${issue_text}")"
+        {
+            awk '$0 == "@@frozen-issue-content@@" { exit } { print }' "${issue_text}"
+            printf 'Frozen:   %s by `just new-branch`\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            printf 'SHA-256:  %s (of everything below the line)\n' "${sha}"
+            printf '\n---\n\n'
+            awk 'f { print; next } $0 == "@@frozen-issue-content@@" { f = 1 }' "${issue_text}"
+        } > "${frozen}"
+        git add "${frozen}"
+        echo "--> Issue ${issue_slug}#{{issue}} frozen into ${frozen}"
+    else
+        echo "--> NOTE: issue #{{issue}} was NOT frozen into the branch - ${freeze_skip}."
+    fi
+
     # Only commit if the audit file produced something to commit. Without the
     # `.ai` submodule there is nothing staged, and an unconditional `git commit`
     # fails - which used to abort here leaving the branch created but unpushed.
     # Found by running this in a repository that has no .ai, which is what most
     # future users of this file will look like.
     if [ -n "$(git diff --cached --name-only)" ]; then
-        just --justfile "{{justfile()}}" _workflow-commit \
-            "the audit commit" "start new dev branch; add audit file"
+        msg="start new dev branch; add audit file"
+        [ -n "${issue_text}" ] && msg="start new dev branch; add audit file and frozen issue"
+        just --justfile "{{justfile()}}" _workflow-commit "the audit commit" "${msg}"
     else
         echo "--> Nothing to commit; ${branch} starts at ${base_sha}."
     fi
@@ -1408,6 +1458,87 @@ _workflow-audit-file branch:
     set -uo pipefail
     b="$(printf '%s' "{{branch}}" | sed 's/\//-/g' | sed 's/\.//g' | sed 's/[^a-zA-Z0-9_-]/_/g')"
     git ls-tree -r --name-only "{{branch}}" -- .audit 2>/dev/null | grep -E "^\.audit/[^/]+_${b}\.md$" | head -1 || true
+
+# The issue a branch is cut for, as text: a header, a marker line, then the content (internal).
+#
+# FROZEN INTO THE BRANCH AT THE CUT (#91). The issue is the specification of the work, and it
+# lives only on the forge: its body can be edited after the work began with no trace in the
+# repository, and a reader of the branch alone - a clone, an archive, an agent without forge
+# access - sees a number and nothing more. `new-branch` writes this text next to the audit
+# file, in the maintainer's signed first commit; `land` renders it again and compares.
+#
+# ONE PROGRAM FOR BOTH. The content below the marker - the body, then every comment - is what
+# the recorded SHA-256 is taken over, so `new-branch` and `land` must render it identically;
+# a second copy of the jq program would be the way they drift apart. Same --jq approach as the
+# pull-request lookup (#39), and testable the same way: a stub gh running the real jq.
+_workflow-issue-text slug issue:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # interpolated into the jq program below, so it must be exactly owner/name
+    if ! [[ "{{slug}}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+        echo "not a repository slug: {{slug}}" >&2; exit 2
+    fi
+    if ! [[ "{{issue}}" =~ ^[0-9]+$ ]]; then
+        echo "not an issue number: {{issue}}" >&2; exit 2
+    fi
+    prog='"Issue:    {{slug}}#\(.number)\nTitle:    \(.title)\nURL:      \(.url)\n'
+    prog+='State:    \(.state) at freeze\nAuthor:   @\(.author.login // "ghost")\n'
+    prog+='Updated:  \(.updatedAt)\nComments: \(.comments | length)\n'
+    prog+='@@frozen-issue-content@@\n" + (.body // "")'
+    prog+=' + "\n\n---\n\n## Comments at freeze (\(.comments | length))\n"'
+    prog+=' + ([.comments[] | "\n### @\(.author.login // "ghost"), \(.createdAt)\n\n\(.body // "")\n"] | join(""))'
+    exec gh issue view "{{issue}}" --repo "{{slug}}" \
+        --json number,title,url,state,author,createdAt,updatedAt,body,comments --jq "${prog}"
+
+# SHA-256 of the content part of `_workflow-issue-text` output read from stdin (internal).
+_workflow-issue-sha:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    content() { awk 'f { print; next } $0 == "@@frozen-issue-content@@" { f = 1 }'; }
+    if command -v sha256sum >/dev/null 2>&1; then content | sha256sum | cut -d' ' -f1
+    else content | shasum -a 256 | cut -d' ' -f1; fi
+
+# Has the issue a branch was cut for changed since? A note at `land`, never a refusal (#91).
+#
+# Edits after the cut are normal - a results comment, a correction. The point is that the land
+# merge, the second signature, is made knowing it: anything that changed what was built belongs
+# on the branch as a file. Silent when the branch carries no frozen issue (cut before #91, or
+# where gh was missing); a re-check that cannot be made says so, it is not "unchanged".
+_workflow-issue-drift branch:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    b="$(printf '%s' "{{branch}}" | sed 's/\//-/g' | sed 's/\.//g' | sed 's/[^a-zA-Z0-9_-]/_/g')"
+    frozen="$(git ls-tree -r --name-only "{{branch}}" -- .audit 2>/dev/null \
+              | grep -E "^\.audit/[^/]+_${b}\.issue\.md$" | head -1 || true)"
+    [ -n "${frozen}" ] || exit 0
+    text="$(git show "{{branch}}:${frozen}")"
+    ref="$(printf '%s\n' "${text}" | sed -n 's/^Issue:    //p' | head -1)"
+    was_sha="$(printf '%s\n' "${text}" | sed -n 's/^SHA-256:  \([0-9a-f]\{64\}\).*/\1/p' | head -1)"
+    was_n="$(printf '%s\n' "${text}" | sed -n 's/^Comments: \([0-9]*\)$/\1/p' | head -1)"
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "--> NOTE: issue ${ref} was not re-checked against ${frozen} - gh is not installed here."
+        exit 0
+    fi
+    now="$(mktemp)"; trap 'rm -f "${now}"' EXIT
+    if ! just --justfile "{{justfile()}}" _workflow-issue-text "${ref%#*}" "${ref##*#}" > "${now}" 2>&1; then
+        echo "--> NOTE: issue ${ref} could not be re-checked against ${frozen}:"
+        sed 's/^/      /' "${now}"
+        exit 0
+    fi
+    now_sha="$(just --justfile "{{justfile()}}" _workflow-issue-sha < "${now}")"
+    now_n="$(sed -n 's/^Comments: \([0-9]*\)$/\1/p' "${now}" | head -1)"
+    if [ "${now_sha}" = "${was_sha}" ]; then
+        echo "--> issue ${ref}: unchanged since this branch was cut (${frozen})."
+        exit 0
+    fi
+    if [ -n "${was_n}" ] && [ -n "${now_n}" ] && [ "${now_n}" -gt "${was_n}" ]; then
+        what="$((now_n - was_n)) new comment(s)"
+    else
+        what="body or a comment edited"
+    fi
+    echo "--> NOTE: issue ${ref} changed after this branch was cut (${what})."
+    echo "    The branch was worked against ${frozen}."
+    echo "    Anything that changed what was built belongs on the branch as a file."
 
 _workflow-commit branch_hint message:
     #!/usr/bin/env bash
@@ -1999,6 +2130,10 @@ land branch='':
             echo "" >&2
             exit 1
         fi
+
+        # THE SPECIFICATION, AS IT STANDS NOW AGAINST AS IT WAS AT THE CUT (#91). A note,
+        # never a refusal - but said before the merge, so the signature is made knowing it.
+        just --justfile "{{justfile()}}" _workflow-issue-drift "${branch}"
 
         # CAN {{WORKFLOW_MAIN}} TAKE A MAINTAINER MERGE AT ALL? (#51)
         #

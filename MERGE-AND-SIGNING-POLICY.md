@@ -161,6 +161,25 @@ The audit commit is the *human-only* act the whole gate is built around, and it
 is the one commit an AI assistant must not be able to produce, so it was the
 last one that should have depended on an invisible config bit (wamp-cicd#36).
 
+**What the audit commit signs: the affidavit and the specification.** A branch is
+cut for an issue, and the issue is the specification of the work. It lives on
+the forge, where its body can be edited after the work began without a trace in
+the repository. So `just new-branch` fetches the issue - body and the comments
+present at the cut - and writes it next to the audit file, as
+`.audit/<user>_<branch>.issue.md` with the SHA-256 of its content, in the same
+signed commit (wamp-cicd#91). The maintainer's first signature then covers the
+specification as it stood when the work began. Everything that comes up during
+the work - measurements, results, decisions, corrections - is committed on the
+branch and adopted by the second signature, the landing merge. Before that
+merge, `just land` fetches the issue again and says so when it has changed
+since the cut. A note, not a refusal: an edit after the cut is normal, but the
+merge should be signed knowing it.
+
+Where `gh` is not installed, or the checkout has no GitHub remote, the branch is
+cut without the frozen issue and the recipe says so loudly, as it does for an
+unsigned commit. Where `gh` is installed but cannot fetch the issue, nothing is
+created: an issue that could not be fetched is not an issue without text.
+
 This belongs in a recipe rather than in a runbook. It is six commands, one of
 which must be signed, three of which are pushes to different remotes, and one of
 which is destructive. Every clerical guard in `workflow.just` replaced a step
