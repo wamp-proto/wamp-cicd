@@ -148,6 +148,63 @@ Update publish job in release workflows:
 - [ ] https://pypi.org/manage/project/xbr/settings/publishing/
 - [ ] https://pypi.org/manage/project/txaio/settings/publishing/
 
+**Verifying the attestations (#57):**
+
+`scripts/verify-pypi-provenance.sh <pypi-project> <version> <github-repository-url>` checks every
+file of a release: it lists the files from the PyPI simple API (JSON, PEP 691) and runs
+`pypi-attestations verify pypi --repository <github-repository-url> pypi:<file>` for each one.
+It prints one line per file (`OK`, `MISSING`: PyPI has no attestation, `FAILED`: with the
+verifier's reason) and a summary, and exits with 0 only if every file verified (1 if a file is
+missing or failed, or the version has no files; 2 for wrong usage, a missing tool or an
+unreachable listing).
+
+```
+$ bash .cicd/scripts/verify-pypi-provenance.sh crossbar 26.7.1 https://github.com/crossbario/crossbar
+OK      crossbar-26.7.1-py3-none-any.whl
+OK      crossbar-26.7.1.tar.gz
+
+crossbar 26.7.1: 2 files, 2 verified, 0 missing an attestation, 0 failed (repository https://github.com/crossbario/crossbar)
+```
+
+It needs `pypi-attestations` (installed by each repository's `just install-tools`), and network
+access to `pypi.org`, `files.pythonhosted.org` and the Sigstore trust root
+(`tuf-repo-cdn.sigstore.dev`). The Rekor inclusion proof is part of the attestation, so
+`rekor.sigstore.dev` is not queried.
+
+Recipe pattern for each repository's justfile (`<project>`, `<org>/<repo>` filled in):
+
+```
+# Verify the PyPI provenance (PEP 740 attestations) of every file of a release (default: the current version)
+verify-pypi version="":
+    #!/usr/bin/env bash
+    set -e
+    VERSION="{{ version }}"
+    if [ -z "${VERSION}" ]; then
+        VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+    fi
+    bash .cicd/scripts/verify-pypi-provenance.sh <project> "${VERSION}" https://github.com/<org>/<repo>
+```
+
+Docs snippet for each repository's `docs/installation.rst`:
+
+```rst
+Verifying a release
+-------------------
+
+Every file of a release on PyPI carries a `PEP 740 <https://peps.python.org/pep-0740/>`__
+attestation. To check that a file was uploaded by this project's release workflow:
+
+.. code-block:: console
+
+    $ pip install pypi-attestations
+    $ pypi-attestations verify pypi --repository https://github.com/<org>/<repo> \
+          pypi:<project>-<version>-py3-none-any.whl
+    OK: <project>-<version>-py3-none-any.whl
+
+This proves that the file was uploaded to PyPI through Trusted Publishing by a GitHub Actions
+workflow of ``github.com/<org>/<repo>``. It does not prove how the file was built.
+```
+
 ---
 
 ### 3. SBOM Signing
