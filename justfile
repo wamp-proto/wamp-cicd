@@ -82,6 +82,7 @@ test:
     bash scripts/deps.sh check || { echo "run: just deps" >&2; exit 1; }
     bash tests/test-deps.sh
     bash tests/test-check-release-fileset.sh
+    bash tests/test-verify-pypi-provenance.sh
     bash tests/test-new-branch-collision.sh
     bash tests/test-new-branch-audit.sh
     bash tests/test-new-branch-freeze.sh
